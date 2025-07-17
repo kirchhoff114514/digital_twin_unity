@@ -36,3 +36,8 @@ sysinfo.txt
 # Rider
 .idea/
 *.sln.iml
+# 其他
+*.FBX*
+*.fbx*
+*.FBX*.*
+*.fbx*.*
