@@ -31,6 +31,7 @@ public class MotionPlanner : MonoBehaviour
     [Tooltip("生成的轨迹点之间的最小时间间隔（秒）。影响轨迹的平滑度和点密度。")]
     [Range(0.01f, 0.5f)]
     public float trajectoryWaypointTimeStep = 0.05f; // 默认每 50ms 生成一个轨迹点
+    public float totaltime = 1.0f; // 默认每 50ms 生成一个轨迹点
 
     [Tooltip("每个关节的自由度数量。例如，5轴机械臂就是5。")]
     public int robotDOF = 5; // 机械臂的自由度 (Degrees Of Freedom)
@@ -58,8 +59,6 @@ public class MotionPlanner : MonoBehaviour
         }
 
         // 初始化当前关节角度数组。
-        // 在实际应用中，_currentJointAngles 应该从 RobotArmExecutor 或传感器获取当前真实关节状态。
-        // 这里为了演示，我们假设启动时为零位。
         _currentJointAngles = new float[robotDOF]; 
         for (int i = 0; i < robotDOF; i++)
         {
@@ -171,23 +170,24 @@ public class MotionPlanner : MonoBehaviour
                     _currentJointAngles, // 起始关节角度
                     targetJointAngles,   // 目标关节角度
                     trajectoryWaypointTimeStep, // 轨迹点时间间隔
-                    defaultSpeedFactor // 使用默认速度因子
+                    defaultSpeedFactor, // 使用默认速度因子
+                    totaltime
                 );
                 break;
 
             case PlanningAlgorithm.CartesianSpaceStraightLine:
-                Debug.Log("MotionPlanner: 执行笛卡尔空间直线规划...");
-                // pathPlanner.GenerateCartesianSpaceTrajectory 返回一个包含多个轨迹点的列表
-                // 注意：笛卡尔空间规划内部会多次调用 IK
-                trajectoryPoints = pathPlanner.GenerateCartesianSpaceTrajectory(
-                    GetEndEffectorCurrentPose(), // 起始末端位姿 (XYZ, Euler)
-                    intent.TargetPosition,       // 目标末端位置
-                    intent.TargetEulerAngles,    // 目标末端欧拉角
-                    trajectoryWaypointTimeStep,  // 轨迹点时间间隔
-                    kinematicsCalculator,        // 传入 KinematicsCalculator 用于每步转换
-                    _currentJointAngles,         // 将当前关节角度传递给笛卡尔规划器，供内部 IK 使用
-                    defaultSpeedFactor // 使用默认速度因子
-                );
+                // Debug.Log("MotionPlanner: 执行笛卡尔空间直线规划...");
+                // // pathPlanner.GenerateCartesianSpaceTrajectory 返回一个包含多个轨迹点的列表
+                // // 注意：笛卡尔空间规划内部会多次调用 IK
+                // trajectoryPoints = pathPlanner.GenerateCartesianSpaceTrajectory(
+                //     GetEndEffectorCurrentPose(), // 起始末端位姿 (XYZ, Euler)
+                //     intent.TargetPosition,       // 目标末端位置
+                //     intent.TargetEulerAngles,    // 目标末端欧拉角
+                //     trajectoryWaypointTimeStep,  // 轨迹点时间间隔
+                //     kinematicsCalculator,        // 传入 KinematicsCalculator 用于每步转换
+                //     _currentJointAngles,         // 将当前关节角度传递给笛卡尔规划器，供内部 IK 使用
+                //     defaultSpeedFactor // 使用默认速度因子
+                // );
                 break;
 
             default:
@@ -218,7 +218,7 @@ public class MotionPlanner : MonoBehaviour
     /// 它将调用 KinematicsCalculator 的 SolveFK 方法。
     /// </summary>
     /// <returns>当前末端执行器的位置和欧拉角（作为 System.Tuple）。</returns>
-    private Tuple<Vector3, Vector3> GetEndEffectorCurrentPose()
+    private Matrix4x4 GetEndEffectorCurrentPose()
     {
         // 调用 KinematicsCalculator 进行正运动学计算
         return kinematicsCalculator.SolveFK(_currentJointAngles); 

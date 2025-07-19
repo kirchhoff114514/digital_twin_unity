@@ -162,6 +162,7 @@ public class RobotArmExecutor : MonoBehaviour
                         virtualArmRotationSpeed * Time.deltaTime // 旋转速度
                     );
 
+
                     // 判断是否到达目标角度（这里判断的是最终的 localRotation 是否接近目标）
                     if (Quaternion.Angle(joint.localRotation, _targetJointRotations[i]) > jointReachThreshold)
                     {

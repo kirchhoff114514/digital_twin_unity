@@ -45,15 +45,8 @@ public class RobotControlSystemManager : MonoBehaviour
         Debug.Log("RobotControlSystemManager: RobotInputManager.OnRobotControlIntentUpdated 已订阅到 MotionPlanner.ProcessRobotControlIntent。");
 
         // 当 MotionPlanner 生成新的运动指令时，RobotArmExecutor 将执行它。
-        motionPlanner.OnRobotMotionCommandReadyForExecution += robotArmExecutor.ExecuteMotionCommand; // <--- 这里已修正
+        motionPlanner.OnRobotMotionCommandReadyForExecution += robotArmExecutor.ExecuteMotionCommand; 
         Debug.Log("RobotControlSystemManager: MotionPlanner.OnRobotMotionCommandReadyForExecution 已订阅到 RobotArmExecutor.ExecuteMotionCommand。");
-        
-        // 确保 MotionPlanner 能够及时获取到机械臂的最新状态
-        // 订阅 RobotArmExecutor 的事件，以便在机械臂移动后更新 MotionPlanner 的内部状态。
-        // 注意：RobotArmExecutor 中已经有一个在执行轨迹点时主动更新 MotionPlanner 的逻辑，
-        // 如果你需要更频繁的实时反馈（例如每帧更新），可以考虑添加一个 OnJointAnglesUpdated 事件在 Executor 中。
-        // 目前我们的 Executor 在每次到达轨迹点时会主动调用 motionPlanner.UpdateCurrentJointAngles(_currentJointAngles);
-        // 所以这里不需要额外的事件订阅，但如果你修改了 Executor 的逻辑，可能需要重新考虑。
 
         Debug.Log("RobotControlSystemManager: 系统初始化完成，事件链已建立。");
     }
@@ -99,9 +92,6 @@ public class RobotControlSystemManager : MonoBehaviour
             Debug.LogError("RobotControlSystemManager: 'Robot Arm Executor' 引用未设置。请在 Inspector 中拖拽赋值。", this);
             allGood = false;
         }
-
-        // 可以根据需要添加更多检查，例如确保 MotionPlanner 内部的 KinematicsCalculator 和 PathPlanner 也已设置。
-        // 不过由于这些是 MotionPlanner 的内部依赖，最好由 MotionPlanner 自己检查。
 
         return allGood;
     }
