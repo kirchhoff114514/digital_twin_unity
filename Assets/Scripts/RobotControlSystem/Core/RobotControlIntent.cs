@@ -25,15 +25,7 @@ public enum PlanningAlgorithm
     // TODO: 可以添加更多算法，如RRT, PRM, 碰撞避免算法等
 }
 
-/// <summary>
-/// 定义末端夹爪的控制状态。
-/// </summary>
-public enum GripperState
-{
-    None,   // 没有夹爪控制意图
-    Open,   // 夹爪打开
-    Close   // 夹爪关闭
-}
+
 
 /// <summary>
 /// RobotControlIntent 封装了用户或高层系统对机械臂的意图。

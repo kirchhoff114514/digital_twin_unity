@@ -330,7 +330,7 @@ public class RobotInputManager : MonoBehaviour
     {
         if (gripperStatusText != null)
         {
-            gripperStatusText.text = _isGripperOpen ? "夹爪：打开" : "夹爪：关闭";
+            gripperStatusText.text = _isGripperOpen ? "open" : "close";
         }
     }
 
