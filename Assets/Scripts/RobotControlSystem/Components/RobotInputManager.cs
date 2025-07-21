@@ -27,8 +27,8 @@ public class RobotInputManager : MonoBehaviour
     public Toggle jointTeachingModeToggle;
     [Tooltip("控制模式切换按钮。")]
     public Toggle taskControlModeToggle;
-    [Tooltip("演示模式切换按钮。")]
-    public Toggle demoModeToggle;
+    [Tooltip("Play模式切换按钮。")]
+    public Button playModeButton; // 单一按钮用于切换到Play模式
 
     [Header("示教模式 UI (JointSpaceTeaching)")]
     [Tooltip("机械臂所有关节的Slider数组。请按关节顺序赋值。")]
@@ -55,12 +55,9 @@ public class RobotInputManager : MonoBehaviour
     [Tooltip("控制模式的执行按钮。")]
     public Button executeTaskButton;
 
-
-    [Header("演示模式 UI (Demonstration)")]
-    [Tooltip("演示序列ID输入框。")]
-    public TMP_InputField demoSequenceIDInput;
-    [Tooltip("播放演示按钮。")]
-    public Button playDemoButton;
+    [Header("Play 模式 UI")]
+    [Tooltip("在Play模式下，抓取物体后将物体放入指定区域的按钮。")]
+    public Button placeButton;
 
     // --- 新增统一夹爪控制 UI 引用 ---
     [Header("末端夹爪控制")]
@@ -74,6 +71,20 @@ public class RobotInputManager : MonoBehaviour
     private ControlMode _currentSelectedMode = ControlMode.JointSpaceTeaching; // 默认启动模式
     private float[] _currentJointAngles = new float[5]; // 假设5个关节，根据你的机械臂DOF调整
     private bool _isGripperOpen = false; // 内部状态：夹爪当前是打开还是关闭
+
+    [Header("Play 模式配置")]
+    [Tooltip("键盘控制关节的速度。")]
+    public float keyboardJointSpeed = 5.0f; // 关节每秒转动的度数
+
+    [Tooltip("放置位置（Target Position）。")]
+    public Vector3 placePosition = new Vector3(0.5f, 0.2f, 0.3f); // 示例放置位置
+    [Tooltip("放置时的末端姿态（Euler Angles）。")]
+    public Vector3 placeEulerAngles = new Vector3(0f, 90f, 0f); // 示例放置姿态
+
+    [Tooltip("初始位置（Home Position）。")]
+    public Vector3 homePosition = new Vector3(0.0f, 0.5f, 0.0f); // 示例初始位置
+    [Tooltip("初始位置时的末端姿态（Euler Angles）。")]
+    public Vector3 homeEulerAngles = new Vector3(0f, 0f, 0f); // 示例初始姿态
 
 
     void Awake()
@@ -89,11 +100,68 @@ public class RobotInputManager : MonoBehaviour
         SetupModeToggles();
         SetupJointSliders();
         SetupTaskControlUI();
-        SetupDemoUI();
+        SetupPlayModeUI(); // 初始化Play模式UI
         SetupGripperControlUI(); // 初始化夹爪控制UI
 
         Debug.Log("RobotInputManager: 初始化完成，准备接收UI输入。");
     }
+
+    void Update()
+    {
+        // 在Play模式下处理键盘输入
+        if (_currentSelectedMode == ControlMode.PlayMode)
+        {
+            HandleKeyboardInput();
+        }
+    }
+
+    /// <summary>
+    /// 处理键盘输入以控制机械臂关节。
+    /// </summary>
+    private void HandleKeyboardInput()
+    {
+        bool jointChanged = false;
+        float[] newJointAngles = (float[])_currentJointAngles.Clone(); // 克隆当前关节角度，避免直接修改
+
+        // 示例：使用QE ASDW RF键控制5个关节
+        // 可以根据实际需求调整键位和关节映射
+        // Joint 1
+        if (Input.GetKey(KeyCode.Q)) { newJointAngles[0] += keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+        if (Input.GetKey(KeyCode.E)) { newJointAngles[0] -= keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+
+        // Joint 2
+        if (Input.GetKey(KeyCode.A)) { newJointAngles[1] += keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+        if (Input.GetKey(KeyCode.D)) { newJointAngles[1] -= keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+
+        // Joint 3
+        if (Input.GetKey(KeyCode.S)) { newJointAngles[2] += keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+        if (Input.GetKey(KeyCode.W)) { newJointAngles[2] -= keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+
+        // Joint 4
+        if (Input.GetKey(KeyCode.R)) { newJointAngles[3] += keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+        if (Input.GetKey(KeyCode.F)) { newJointAngles[3] -= keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+
+        // Joint 5 (如果你的机械臂有5个自由度)
+        if (Input.GetKey(KeyCode.Z)) { newJointAngles[4] += keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+        if (Input.GetKey(KeyCode.X)) { newJointAngles[4] -= keyboardJointSpeed * Time.deltaTime; jointChanged = true; }
+
+
+        if (jointChanged)
+        {
+            // 限制关节角度在合理范围内（例如：-180到180度）
+            for (int i = 0; i < newJointAngles.Length; i++)
+            {
+                newJointAngles[i] = Mathf.Clamp(newJointAngles[i], -180f, 180f); // 根据你的机械臂关节限制调整
+            }
+
+            _currentJointAngles = newJointAngles; // 更新内部状态
+            // 发布 JointSpaceTeaching 意图，因为键盘控制也是直接改变关节角度
+            OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateJointSpaceTeachingIntent(_currentJointAngles));
+            // Debug.Log($"RobotInputManager: 键盘控制，发布关节意图: {_currentJointAngles[0].ToString("F1")}, {_currentJointAngles[1].ToString("F1")}, ...");
+
+        }
+    }
+
 
     /// <summary>
     /// 设置模式切换按钮的监听器。
@@ -109,9 +177,10 @@ public class RobotInputManager : MonoBehaviour
         {
             taskControlModeToggle.onValueChanged.AddListener(isOn => OnModeToggleChanged(ControlMode.TaskControl, isOn));
         }
-        if (demoModeToggle != null)
+        // Play模式按钮只在点击时激活PlayMode，不使用Toggle
+        if (playModeButton != null)
         {
-            demoModeToggle.onValueChanged.AddListener(isOn => OnModeToggleChanged(ControlMode.Demonstration, isOn));
+            playModeButton.onClick.AddListener(OnPlayModeButtonClicked);
         }
 
         // 确定初始模式并更新UI可见性
@@ -122,10 +191,6 @@ public class RobotInputManager : MonoBehaviour
         else if (taskControlModeToggle != null && taskControlModeToggle.isOn)
         {
             _currentSelectedMode = ControlMode.TaskControl;
-        }
-        else if (demoModeToggle != null && demoModeToggle.isOn)
-        {
-            _currentSelectedMode = ControlMode.Demonstration;
         }
         else // 如果都没有默认选中，则默认选中示教模式
         {
@@ -149,6 +214,21 @@ public class RobotInputManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Play模式按钮点击时调用，切换到Play模式。
+    /// </summary>
+    private void OnPlayModeButtonClicked()
+    {
+        // 当点击Play模式按钮时，确保其他Toggle被关闭
+        if (jointTeachingModeToggle != null) jointTeachingModeToggle.isOn = false;
+        if (taskControlModeToggle != null) taskControlModeToggle.isOn = false;
+
+        _currentSelectedMode = ControlMode.PlayMode;
+        Debug.Log($"RobotInputManager: 模式切换到: {_currentSelectedMode}");
+        UpdateUIVisibility();
+    }
+
+
+    /// <summary>
     /// 根据当前选择的模式，更新UI元素的可见性。
     /// 夹爪控制UI现在是独立的，不随模式切换隐藏/显示。
     /// </summary>
@@ -157,7 +237,7 @@ public class RobotInputManager : MonoBehaviour
         // 隐藏所有模式的父面板
         SetPanelActive(GetPanelParent(jointSliders), false); // 示教模式面板
         SetPanelActive(GetPanelParent(targetPosXInput), false); // 控制模式面板
-        SetPanelActive(GetPanelParent(demoSequenceIDInput), false); // 演示模式面板
+        SetPanelActive(GetPanelParent(placeButton), false); // Play模式面板
 
         switch (_currentSelectedMode)
         {
@@ -167,10 +247,10 @@ public class RobotInputManager : MonoBehaviour
             case ControlMode.TaskControl:
                 SetPanelActive(GetPanelParent(targetPosXInput), true);
                 break;
-            case ControlMode.Demonstration:
-                SetPanelActive(GetPanelParent(demoSequenceIDInput), true);
+            case ControlMode.PlayMode:
+                // 在Play模式下，只显示“Place”按钮
+                SetPanelActive(GetPanelParent(placeButton), true);
                 break;
-            // GripperControl模式没有对应的UI面板，仅通过按钮触发
             case ControlMode.GripperControl:
                 // 此时不显示任何特定模式的UI，通常由其他UI触发夹爪控制
                 break;
@@ -274,17 +354,6 @@ public class RobotInputManager : MonoBehaviour
     /// </summary>
     private void SetupTaskControlUI()
     {
-        // 设置规划算法下拉菜单选项
-        if (planningAlgorithmDropdown != null)
-        {
-            planningAlgorithmDropdown.ClearOptions();
-            foreach (PlanningAlgorithm algo in Enum.GetValues(typeof(PlanningAlgorithm)))
-            {
-                planningAlgorithmDropdown.options.Add(new TMP_Dropdown.OptionData(algo.ToString()));
-            }
-            planningAlgorithmDropdown.value = 0; // 默认选中第一个
-            planningAlgorithmDropdown.RefreshShownValue();
-        }
 
         // 绑定执行按钮事件
         if (executeTaskButton != null)
@@ -350,16 +419,13 @@ public class RobotInputManager : MonoBehaviour
             );
             Vector3 targetEuler = new Vector3(
                 ParseInput(targetPitchInput),
-                ParseInput(targetPitchInput), // 这里原本是 targetRollInput，请检查是否是笔误
+                ParseInput(targetRollInput), // 修正：这里应该是targetRollInput
                 0 // 假设Yaw为0或通过其他Input设定，此处未提供Yaw输入框
             );
 
-            // 获取选择的规划算法
-            PlanningAlgorithm selectedAlgo = (PlanningAlgorithm)planningAlgorithmDropdown.value;
-
             // 发布 TaskControl 意图 (不再包含夹爪状态，因为夹爪通过独立按钮触发)
-            OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateTaskControlIntent(targetPos, targetEuler, selectedAlgo));
-            Debug.Log($"RobotInputManager: 发布 TaskControl 意图。目标位置: {targetPos}, 欧拉角: {targetEuler}, 算法: {selectedAlgo}");
+            OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateTaskControlIntent(targetPos, targetEuler));
+            Debug.Log($"RobotInputManager: 发布 TaskControl 意图。目标位置: {targetPos}, 欧拉角: {targetEuler}");
         }
         else
         {
@@ -383,31 +449,37 @@ public class RobotInputManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 设置演示模式UI的监听器。
+    /// 设置Play模式UI的监听器。
     /// </summary>
-    private void SetupDemoUI()
+    private void SetupPlayModeUI()
     {
-        if (playDemoButton != null)
+        if (placeButton != null)
         {
-            playDemoButton.onClick.AddListener(OnPlayDemoButtonClicked);
+            placeButton.onClick.AddListener(OnPlaceButtonClicked);
         }
     }
 
     /// <summary>
-    /// 播放演示按钮点击时调用，发布 Demonstration 意图。
+    /// "Place"按钮点击时调用，发布 TaskControl 意图到放置位置，然后回到初始位置。
     /// </summary>
-    private void OnPlayDemoButtonClicked()
+    private void OnPlaceButtonClicked()
     {
-        if (_currentSelectedMode == ControlMode.Demonstration)
+        if (_currentSelectedMode == ControlMode.PlayMode)
         {
-            // 假设Demo ID是整数
-            int demoID = (int)ParseInput(demoSequenceIDInput);
-            OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateDemonstrationIntent(demoID));
-            Debug.Log($"RobotInputManager: 发布 Demonstration 意图。演示ID: {demoID}");
+            // 1. 发布到放置位置的意图
+            // 假设使用默认的InverseKinematics算法到达指定位置
+            OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateTaskControlIntent(placePosition, placeEulerAngles));
+            Debug.Log($"RobotInputManager: 在Play模式下，发布放置意图。目标位置: {placePosition}, 欧拉角: {placeEulerAngles}");
+
+            // 2. 接着发布回到初始位置的意图
+            // 可以在MotionPlanner中实现串行执行，或者在这里延迟调用
+            // 为了简化，这里直接发送两个意图，MotionPlanner需要处理序列
+            OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateTaskControlIntent(homePosition, homeEulerAngles));
+            Debug.Log($"RobotInputManager: 在Play模式下，发布回到初始位置意图。目标位置: {homePosition}, 欧拉角: {homeEulerAngles}");
         }
         else
         {
-            Debug.LogWarning("RobotInputManager: 当前不在演示模式，无法播放演示。", this);
+            Debug.LogWarning("RobotInputManager: 当前不在Play模式，无法执行放置操作。", this);
         }
     }
 }
