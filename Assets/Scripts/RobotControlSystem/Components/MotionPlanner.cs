@@ -1,289 +1,316 @@
 // File: Assets/Scripts/RobotControlSystem/Components/MotionPlanner.cs
-// Description: 机械臂的运动规划器，根据用户意图（RobotControlIntent）生成具体的运动指令（RobotMotionCommand）。
+// Description: 机械臂的运动规划器，根据用户意图和当前实际状态，计算并提供目标角度。
+//              此版本已修改以适应 PathPlanner 仅计算五次多项式系数的新架构。
 
 using UnityEngine;
-using System; // For Action delegate and Tuple
-using System.Collections.Generic; // For List<float[]>
+using System;
+using System.Collections.Generic;
+using System.Linq; // for .Clone()
 
 /// <summary>
 /// MotionPlanner 负责将高层级的用户控制意图（RobotControlIntent）
-/// 转换为低层级的机械臂运动指令（RobotMotionCommand）。
-/// 它处理逆运动学、路径规划和轨迹生成。
+/// 转换为低层级的机械臂期望目标角度。它处理逆运动学、路径规划等，
+/// 但不再直接生成完整轨迹，而是提供当前时刻的期望目标。
 /// </summary>
 public class MotionPlanner : MonoBehaviour
 {
-    // --- 事件定义 ---
-    /// <summary>
-    /// 当运动指令准备好被执行时触发此事件。
-    /// RobotArmExecutor 和 SerialCommunicator 将订阅此事件。
-    /// </summary>
-    public event Action<RobotMotionCommand> OnRobotMotionCommandReadyForExecution;
-
     // --- 公共引用（Inspector 或 RobotControlSystemManager 注入） ---
-
     [Header("依赖组件")]
     [Tooltip("拖拽 KinematicsCalculator 组件到此处。")]
-    public KinematicsCalculator kinematicsCalculator; // 引用新的 KinematicsCalculator
+    public KinematicsCalculator kinematicsCalculator;
     [Tooltip("拖拽 PathPlanner 组件到此处。")]
-    public PathPlanner pathPlanner; // 用于生成关节空间或笛卡尔空间的平滑轨迹
+    public PathPlanner pathPlanner;
 
     [Header("规划参数")]
-    [Tooltip("生成的轨迹点之间的最小时间间隔（秒）。影响轨迹的平滑度和点密度。")]
-    [Range(0.01f, 0.5f)]
-    public float trajectoryWaypointTimeStep = 0.05f; // 默认每 50ms 生成一个轨迹点
-    public float totaltime = 1.0f; // 默认每 50ms 生成一个轨迹点
-
     [Tooltip("每个关节的自由度数量。例如，5轴机械臂就是5。")]
-    public int robotDOF = 5; // 机械臂的自由度 (Degrees Of Freedom)
+    public int robotDOF = 5;
 
-    // --- 内部状态 ---
-    // 存储机械臂当前的关节角度。
-    // IMPORTANT: 这个值应该由 RobotArmExecutor 或实际传感器更新，以保持同步。
-    private float[] _currentJointAngles; 
-    private int _commandCounter = 0;     // 用于生成唯一的 CommandID
+    // --- 内部状态：用于计算目标角度的参数 ---
+    private ControlMode _currentActiveMode; // 记录当前激活的控制模式
+
+    // 用于JointTeach模式
+    private float[] _jointTeachTargetAngles; // 用户直接设定的关节目标角度
+
+    // 用于TaskControl模式
+    private Vector3 _taskControlTargetPosition;     // 任务空间目标位置
+    private Vector3 _taskControlTargetEulerAngles;  // 任务空间目标欧拉角
+    private PlanningAlgorithm _taskControlPlanningAlgorithm; // 任务空间规划算法
+    private GripperState _taskControlGripperState; // 夹爪目标状态 (Open/Close/None)
+    private float _taskControlSegmentStartTime; // 记录当前任务控制指令开始的时间 (Time.time)
+    [Tooltip("在任务控制模式下，机器人平滑过渡到目标位置的期望时间 (秒)。")]
+    public float _taskControlMovementSmoothingDuration = 1.0f; // 默认1秒平滑过渡
+
+    // 用于Demonstration模式
+    private int _demoID; // 演示ID
+    private float[][] _currentDemoTrajectory; // 当前加载的演示轨迹 (包含关节角度和夹爪电机角度)
+    private float _demoExecutionTimer; // 演示计时器
+    private float _demoWaypointTimeInterval = 0.05f; // 演示轨迹点间隔，需要与LoadDemoTrajectory中的时间概念匹配
+
+    // 用于GripperControl模式
+    private GripperState _gripperControlTargetState; // 夹爪控制模式下的目标状态
+
+    // --- 当前时刻计算出的**期望目标**角度（提供给 SerialCommunicator 发送） ---
+    // 这些是MotionPlanner在每一帧或每次CalculateDesiredOutput()调用时更新的值。
+    private float[] _desiredJointAngles; // 当前期望的 5个关节角度
+    private float _desiredGripperAngle; // 当前期望的 1个夹爪驱动电机角度 (只为Open/Close两个固定值)
+
+    // --- 内部：机械臂当前实际关节角度和夹爪电机角度 (由外部 RobotArmExecutor/SerialCommunicator 提供) ---
+    // MotionPlanner需要这些信息作为IK的起点或轨迹规划的起始点。
+    private float[] _currentActualJointAngles;
+    private float _currentActualGripperMotorAngle; // 存储实际夹爪电机角度
 
     void Awake()
     {
-        // 初始化检查：确保必要组件已设置
-        if (kinematicsCalculator == null)
+        if (kinematicsCalculator == null || pathPlanner == null)
         {
-            Debug.LogError("MotionPlanner: 'Kinematics Calculator' 引用未设置。请在 Inspector 中拖拽赋值。", this);
-            enabled = false;
-            return;
-        }
-        if (pathPlanner == null)
-        {
-            Debug.LogError("MotionPlanner: 'Path Planner' 引用未设置。请在 Inspector 中拖拽赋值。", this);
+            Debug.LogError("MotionPlanner: 依赖组件未设置。请在 Inspector 中拖拽赋值。", this);
             enabled = false;
             return;
         }
 
-        // 初始化当前关节角度数组。
-        _currentJointAngles = new float[robotDOF]; 
-        for (int i = 0; i < robotDOF; i++)
-        {
-            _currentJointAngles[i] = 0f; // 初始所有关节角度为 0
-        }
+        // 初始化所有内部状态
+        _currentActualJointAngles = new float[robotDOF];
+        for (int i = 0; i < robotDOF; i++) _currentActualJointAngles[i] = 0f;
+        _currentActualGripperMotorAngle = ConvertGripperStateToMotorAngle(GripperState.Open); // 默认夹爪打开状态对应的电机角度
 
-        Debug.Log("MotionPlanner: 初始化完成。等待 RobotInputManager 的意图。");
+        _desiredJointAngles = (float[])_currentActualJointAngles.Clone();
+        _desiredGripperAngle = _currentActualGripperMotorAngle;
+
+        _jointTeachTargetAngles = (float[])_currentActualJointAngles.Clone();
+
+        _currentActiveMode = ControlMode.JointSpaceTeaching; // 默认启动模式
+
+        Debug.Log("MotionPlanner: 初始化完成。");
+    }
+
+    /// <summary>
+    /// 更新 MotionPlanner 内部记录的**物理机械臂的实际状态**。
+    /// 这个方法应该由 SerialCommunicator 在接收到下位机反馈后调用。
+    /// </summary>
+    /// <param name="actualJointAngles">物理机械臂当前的实际关节角度。</param>
+    /// <param name="actualGripperAngle">物理夹爪驱动电机的实际角度。</param>
+    public void UpdateCurrentActualState(float[] actualJointAngles)
+    {
+        if (actualJointAngles != null && actualJointAngles.Length == robotDOF)
+        {
+            _currentActualJointAngles = (float[])actualJointAngles.Clone();
+            // Debug.Log($"MotionPlanner: 实际状态更新。J1:{_currentActualJointAngles[0]:F1}°, 夹爪电机:{actualGripperAngle:F1}");
+        }
+        else
+        {
+            Debug.LogWarning($"MotionPlanner: 尝试更新当前实际关节角度失败，数组为空或长度不匹配 DOF ({robotDOF})。", this);
+        }
     }
 
     /// <summary>
     /// 接收 RobotInputManager 发布的机器人控制意图。
-    /// 这是 MotionPlanner 的主要入口点。
+    /// 此方法仅更新 MotionPlanner 的内部目标参数，不立即计算或发送指令。
     /// </summary>
     /// <param name="intent">包含用户意图的 RobotControlIntent。</param>
     public void ProcessRobotControlIntent(RobotControlIntent intent)
     {
         Debug.Log($"MotionPlanner: 收到新的控制意图。模式: {intent.Mode}, ID: {intent.Timestamp}");
-        _commandCounter++; // 为新命令生成唯一ID
 
-        RobotMotionCommand command = new RobotMotionCommand();
-        command.CommandID = _commandCounter;
-        command.ExecutionSpeed = 1.0f; // 默认执行速度，可根据逻辑调整
+        _currentActiveMode = intent.Mode; // 更新当前激活的模式
 
-        // 根据不同的控制模式执行规划逻辑
         switch (intent.Mode)
         {
             case ControlMode.JointSpaceTeaching:
-                command = HandleJointSpaceTeaching(intent);
+                if (intent.JointAngles == null || intent.JointAngles.Length != robotDOF)
+                {
+                    Debug.LogError($"MotionPlanner: JointTeach意图的关节数量不匹配DOF ({robotDOF}) 或为空。", this);
+                    return;
+                }
+                _jointTeachTargetAngles = (float[])intent.JointAngles.Clone();
+                _taskControlGripperState = intent.TargetGripperState; // 更新夹爪状态
+                Debug.Log($"MotionPlanner: JointTeach模式意图已更新。J1: {_jointTeachTargetAngles[0]:F1}°, 夹爪状态: {intent.TargetGripperState}");
                 break;
+
             case ControlMode.TaskControl:
-                command = HandleTaskControl(intent);
+                _taskControlTargetPosition = intent.TargetPosition;
+                _taskControlTargetEulerAngles = intent.TargetEulerAngles;
+                _taskControlPlanningAlgorithm = intent.SelectedPlanningAlgorithm; // 可用于未来选择不同算法
+                _taskControlGripperState = intent.TargetGripperState;
+                // 当新的任务控制目标设定时，重置时间，以便从当前位置开始新的平滑过渡
+                _taskControlSegmentStartTime = Time.time;
+                Debug.Log($"MotionPlanner: TaskControl模式意图已更新。目标位置: {intent.TargetPosition}, 夹爪状态: {intent.TargetGripperState}");
                 break;
+
             case ControlMode.Demonstration:
-                command = HandleDemonstration(intent);
+                _demoID = intent.DemoSequenceID;
+                _demoExecutionTimer = 0f; // 重置计时器
+                _currentDemoTrajectory = LoadDemoTrajectory(_demoID); // 预加载演示轨迹
+                if (_currentDemoTrajectory == null || _currentDemoTrajectory.Length == 0)
+                {
+                    Debug.LogError($"MotionPlanner: 无法加载演示序列 ID: {_demoID}。", this);
+                    return;
+                }
+                Debug.Log($"MotionPlanner: Demo模式意图已更新。演示ID: {_demoID}, 轨迹点数: {_currentDemoTrajectory.Length}");
                 break;
+
+            case ControlMode.GripperControl:
+                _gripperControlTargetState = intent.TargetGripperState;
+                Debug.Log($"MotionPlanner: GripperControl模式意图已更新。夹爪状态: {intent.TargetGripperState}");
+                break;
+
             default:
                 Debug.LogWarning($"MotionPlanner: 未知的控制模式: {intent.Mode}。忽略此意图。", this);
-                return;
-        }
-
-        // 如果成功生成了命令，则发布
-        if (command.TrajectoryJointAngles != null && command.TrajectoryJointAngles.Length > 0)
-        {
-            OnRobotMotionCommandReadyForExecution?.Invoke(command);
-            Debug.Log($"MotionPlanner: 已发布 RobotMotionCommand (ID: {command.CommandID}, 类型: {command.CommandType})，包含 {command.TrajectoryJointAngles.Length} 个轨迹点。");
-        }
-        else
-        {
-            Debug.LogWarning($"MotionPlanner: 未能为意图 (ID: {intent.Timestamp}) 生成有效的运动指令。", this);
+                break;
         }
     }
 
     /// <summary>
-    /// 处理示教模式的意图。
-    /// 此时用户直接给出关节角度，无需复杂规划。
+    /// **核心方法：计算并返回当前帧期望发送给下位机的目标角度。**
+    /// 这个方法应该由更高层的协调器（如 RobotControlSystemManager）每帧调用。
     /// </summary>
-    private RobotMotionCommand HandleJointSpaceTeaching(RobotControlIntent intent)
+    /// <param name="deltaTime">自上次调用以来的时间间隔。</param>
+    /// <returns>包含5个关节角度和1个夹爪电机角度的Tuple。</returns>
+    public Tuple<float[], float> CalculateDesiredOutput(float deltaTime)
     {
-        // 示教模式通常是直接将当前关节角度作为目标，形成一个单点轨迹。
-        // 实时更新时，每次滑块变动都会生成一个新命令，包含当前所有关节的角度。
-        if (intent.JointAngles == null || intent.JointAngles.Length != robotDOF)
+        // 确保每次调用都基于当前实际角度，作为规划的起点
+        float[] currentStartAngles = (float[])_currentActualJointAngles.Clone();
+
+        switch (_currentActiveMode)
         {
-            Debug.LogError($"MotionPlanner: 示教模式意图的关节数量不匹配 DOF ({robotDOF}) 或为空。", this);
-            return new RobotMotionCommand();
-        }
-
-        // 更新内部记录的当前关节角度（模拟实时反馈）
-        _currentJointAngles = (float[])intent.JointAngles.Clone(); // 克隆数组避免引用问题
-
-        // 使用 RobotMotionCommand 的静态工厂方法创建命令
-        RobotMotionCommand command = RobotMotionCommand.CreateSinglePointCommand(
-            intent.JointAngles,
-            _commandCounter,
-            1.0f // 示教模式通常立即响应，速度因子为1
-        );
-        return command;
-    }
-
-    /// <summary>
-    /// 处理控制模式的意图（笛卡尔目标）。
-    /// 需要进行 IK 解算和路径规划。
-    /// </summary>
-    private RobotMotionCommand HandleTaskControl(RobotControlIntent intent)
-    {
-        // 1. 逆运动学 (IK) 解算：将笛卡尔目标转换为目标关节角度
-        // 传入 _currentJointAngles 作为 IK 解算的起始点，有助于数值 IK 找到更合适的解。
-        float[] targetJointAngles = kinematicsCalculator.SolveIK(
-            intent.TargetPosition, 
-            intent.TargetEulerAngles, 
-            _currentJointAngles // 传入当前关节角度作为 IK 求解的初始猜测
-        );
-
-        if (targetJointAngles == null || targetJointAngles.Length != robotDOF)
-        {
-            Debug.LogError($"MotionPlanner: IK解算失败或结果关节数量不匹配 DOF ({robotDOF})。无法规划。", this);
-            return new RobotMotionCommand();
-        }
-
-        // 2. 路径规划：根据选择的算法生成轨迹点序列
-        List<float[]> trajectoryPoints = new List<float[]>();
-        float defaultSpeedFactor = 1.0f; // 可以在这里定义控制模式的默认速度，或从UI传递
-
-        switch (intent.SelectedPlanningAlgorithm)
-        {
-            case PlanningAlgorithm.JointSpaceFiveOrderPolynomial:
-                Debug.Log("MotionPlanner: 执行关节空间五次多项式规划...");
-                // pathPlanner.GenerateJointSpaceFiveOrderTrajectory 返回一个包含多个轨迹点的列表
-                trajectoryPoints = pathPlanner.GenerateJointSpaceFiveOrderTrajectory(
-                    _currentJointAngles, // 起始关节角度
-                    targetJointAngles,   // 目标关节角度
-                    trajectoryWaypointTimeStep, // 轨迹点时间间隔
-                    defaultSpeedFactor, // 使用默认速度因子
-                    totaltime
-                );
+            case ControlMode.JointSpaceTeaching:
+                // JointTeach模式：直接将目标值作为期望输出
+                _desiredJointAngles = (float[])_jointTeachTargetAngles.Clone();
+                _desiredGripperAngle = ConvertGripperStateToMotorAngle(_taskControlGripperState); // 使用来自意图的夹爪状态
                 break;
 
-            case PlanningAlgorithm.CartesianSpaceStraightLine:
-                // Debug.Log("MotionPlanner: 执行笛卡尔空间直线规划...");
-                // // pathPlanner.GenerateCartesianSpaceTrajectory 返回一个包含多个轨迹点的列表
-                // // 注意：笛卡尔空间规划内部会多次调用 IK
-                // trajectoryPoints = pathPlanner.GenerateCartesianSpaceTrajectory(
-                //     GetEndEffectorCurrentPose(), // 起始末端位姿 (XYZ, Euler)
-                //     intent.TargetPosition,       // 目标末端位置
-                //     intent.TargetEulerAngles,    // 目标末端欧拉角
-                //     trajectoryWaypointTimeStep,  // 轨迹点时间间隔
-                //     kinematicsCalculator,        // 传入 KinematicsCalculator 用于每步转换
-                //     _currentJointAngles,         // 将当前关节角度传递给笛卡尔规划器，供内部 IK 使用
-                //     defaultSpeedFactor // 使用默认速度因子
-                // );
+            case ControlMode.TaskControl:
+                // TaskControl模式：进行IK解算并生成当前帧的平滑过渡点作为期望输出
+                float[] ikResult = kinematicsCalculator.SolveIK(
+                    _taskControlTargetPosition,
+                    _taskControlTargetEulerAngles,
+                    currentStartAngles // 以当前实际角度作为IK求解起点
+                );
+
+                if (ikResult == null || ikResult.Length != robotDOF)
+                {
+                    Debug.LogError($"MotionPlanner: TaskControl模式下IK解算失败或结果关节数量不匹配 DOF ({robotDOF})。保持当前位置。", this);
+                    // IK失败时，保持当前实际关节角度作为目标，避免机器人跳动
+                    _desiredJointAngles = (float[])currentStartAngles.Clone();
+                    _desiredGripperAngle = ConvertGripperStateToMotorAngle(_taskControlGripperState); // 即使IK失败，也尝试更新夹爪
+                }
+                else
+                {
+                    // 计算当前运动段的已逝时间
+                    float elapsedTimeInSegment = Time.time - _taskControlSegmentStartTime;
+                    // 将已逝时间钳制在平滑过渡总时长内，确保不超过轨迹终点
+                    float t_clamped = Mathf.Min(elapsedTimeInSegment, _taskControlMovementSmoothingDuration);
+
+                    float[] currentDesiredJoints = new float[robotDOF];
+                    for (int i = 0; i < robotDOF; i++)
+                    {
+                        // 计算每个关节的五次多项式系数 (从当前实际角度到IK目标角度)
+                        float[] coeffs = pathPlanner.CalculateFiveOrderPolynomialCoefficients(
+                            currentStartAngles[i], // Q0: 当前实际关节角度
+                            ikResult[i],           // QF: IK解算出的目标关节角度
+                            _taskControlMovementSmoothingDuration // T: 整个平滑过渡的时间
+                        );
+                        // 根据计算出的系数和已逝时间，计算当前时刻的期望关节角度
+                        currentDesiredJoints[i] = coeffs[0] + coeffs[3] * t_clamped * t_clamped * t_clamped +
+                                                  coeffs[4] * t_clamped * t_clamped * t_clamped * t_clamped +
+                                                  coeffs[5] * t_clamped * t_clamped * t_clamped * t_clamped * t_clamped;
+                    }
+                    _desiredJointAngles = currentDesiredJoints;
+
+                    // 夹爪直接设置为目标状态对应的电机角度，不再进行平滑过渡
+                    _desiredGripperAngle = ConvertGripperStateToMotorAngle(_taskControlGripperState);
+
+                    // 如果已经到达平滑过渡的末尾（或超过），将期望关节角度精确设置为目标，避免浮点误差
+                    if (elapsedTimeInSegment >= _taskControlMovementSmoothingDuration)
+                    {
+                        _desiredJointAngles = (float[])ikResult.Clone();
+                        // 夹爪角度已直接设置，无需再次更新
+                    }
+                }
+                break;
+
+            case ControlMode.Demonstration:
+                // 演示模式：根据预加载的轨迹按时间步进
+                _demoExecutionTimer += deltaTime;
+
+                if (_currentDemoTrajectory == null || _currentDemoTrajectory.Length == 0)
+                {
+                    Debug.LogWarning("MotionPlanner: 演示轨迹为空或未加载。", this);
+                    _desiredJointAngles = (float[])currentStartAngles.Clone();
+                    _desiredGripperAngle = ConvertGripperStateToMotorAngle(GripperState.Open);
+                    break;
+                }
+
+                // 计算当前应到达的轨迹点索引
+                int targetWaypointIndex = Mathf.Min(
+                    (int)(_demoExecutionTimer / _demoWaypointTimeInterval),
+                    _currentDemoTrajectory.Length - 1
+                );
+
+                if (targetWaypointIndex >= _currentDemoTrajectory.Length)
+                {
+                    // 演示结束，停留在最后一个点
+                    _desiredJointAngles = new float[robotDOF];
+                    Array.Copy(_currentDemoTrajectory[_currentDemoTrajectory.Length - 1], 0, _desiredJointAngles, 0, robotDOF);
+                    _desiredGripperAngle = _currentDemoTrajectory[_currentDemoTrajectory.Length - 1][robotDOF]; // 从轨迹中获取夹爪电机角度
+                    Debug.Log("MotionPlanner: 演示播放完毕。");
+                }
+                else
+                {
+                    _desiredJointAngles = new float[robotDOF];
+                    Array.Copy(_currentDemoTrajectory[targetWaypointIndex], 0, _desiredJointAngles, 0, robotDOF);
+                    _desiredGripperAngle = _currentDemoTrajectory[targetWaypointIndex][robotDOF]; // 从轨迹中获取夹爪电机角度
+                }
+                break;
+
+            case ControlMode.GripperControl:
+                // GripperControl模式：仅控制夹爪，关节保持当前状态
+                _desiredJointAngles = (float[])currentStartAngles.Clone();
+                _desiredGripperAngle = ConvertGripperStateToMotorAngle(_gripperControlTargetState);
                 break;
 
             default:
-                Debug.LogWarning($"MotionPlanner: 未知的规划算法: {intent.SelectedPlanningAlgorithm}。无法规划。", this);
-                return new RobotMotionCommand();
+                // 未知模式或无活动模式时，保持当前实际角度
+                _desiredJointAngles = (float[])currentStartAngles.Clone();
+                _desiredGripperAngle =  ConvertGripperStateToMotorAngle(GripperState.Open);
+                break;
         }
 
-        if (trajectoryPoints == null || trajectoryPoints.Count == 0)
-        {
-            Debug.LogError("MotionPlanner: 轨迹规划未能生成任何轨迹点。", this);
-            return new RobotMotionCommand();
-        }
-
-        // 更新内部记录的当前关节角度为轨迹的最后一个点（模拟已到达）
-        _currentJointAngles = (float[])trajectoryPoints[trajectoryPoints.Count - 1].Clone();
-
-        RobotMotionCommand command = RobotMotionCommand.CreateTrajectoryCommand(
-            trajectoryPoints.ToArray(), // 将 List<float[]> 转换为 float[][]
-            _commandCounter,
-            defaultSpeedFactor // 使用默认速度因子
-        );
-        command.CommandType = "ExecuteTrajectory"; // 明确命令类型
-        return command;
+        return Tuple.Create(_desiredJointAngles, _desiredGripperAngle);
     }
 
-    /// <summary>
-    /// 获取当前末端执行器的位姿。
-    /// 它将调用 KinematicsCalculator 的 SolveFK 方法。
-    /// </summary>
-    /// <returns>当前末端执行器的位置和欧拉角（作为 System.Tuple）。</returns>
-    private Matrix4x4 GetEndEffectorCurrentPose()
-    {
-        // 调用 KinematicsCalculator 进行正运动学计算
-        return kinematicsCalculator.SolveFK(_currentJointAngles); 
-    }
-
-
-    /// <summary>
-    /// 处理演示模式的意图。
-    /// 此时只需加载预设的轨迹。
-    /// </summary>
-    private RobotMotionCommand HandleDemonstration(RobotControlIntent intent)
-    {
-        // 演示模式：根据 DemoSequenceID 加载预设轨迹
-        float[][] demoTrajectory = LoadDemoTrajectory(intent.DemoSequenceID);
-
-        if (demoTrajectory == null || demoTrajectory.Length == 0)
-        {
-            Debug.LogError($"MotionPlanner: 无法加载演示序列 ID: {intent.DemoSequenceID}。", this);
-            return new RobotMotionCommand();
-        }
-
-        // 更新内部记录的当前关节角度为轨迹的最后一个点
-        _currentJointAngles = (float[])demoTrajectory[demoTrajectory.Length - 1].Clone();
-
-        // 演示模式通常有预设的速度，但为了简单，这里也使用1.0f，
-        // 实际可以从演示数据中读取。
-        float demoSpeedFactor = 1.0f; 
-
-        RobotMotionCommand command = RobotMotionCommand.CreateTrajectoryCommand(
-            demoTrajectory,
-            _commandCounter,
-            demoSpeedFactor // 使用演示模式的速度因子
-        );
-        command.CommandType = "ExecuteDemo"; // 明确演示命令类型
-        return command;
-    }
 
     /// <summary>
     /// 模拟加载预设的演示轨迹。
-    /// 实际中可以从 JSON、CSV 文件或 ScriptableObject 加载。
+    /// **重要：请确保这里返回的 float[] 数组的维度与 robotDOF + 1 (for gripper) 匹配。**
+    /// 数组的最后一个元素应为夹爪电机角度。
     /// </summary>
     /// <param name="demoID">演示序列的ID。</param>
-    /// <returns>预设的关节角度轨迹。</returns>
+    /// <returns>预设的关节角度和夹爪电机角度轨迹。</returns>
     private float[][] LoadDemoTrajectory(int demoID)
     {
         // --- 示例演示轨迹数据 ---
-        // 实际应用中，这会是一个更复杂的加载机制。
-        // 这里只是为了演示，提供两个简单的硬编码轨迹。
+        // 实际应用中，这会是一个更复杂的加载机制，例如从文件加载。
+        // 这里的轨迹点间隔（_demoWaypointTimeInterval）需要与实际演示数据的生成间隔匹配。
+        // float[] 的长度应该是 robotDOF + 1 (5关节 + 1夹爪电机角度)。
         switch (demoID)
         {
-            case 1: // 演示 1：简单的来回运动
+            case 1: // 演示 1：简单的来回运动 (5关节 + 夹爪)
+                _demoWaypointTimeInterval = 0.1f; // 假设这个演示的轨迹点是每0.1秒一个
                 return new float[][]
                 {
-                    new float[] { 0, 0, 0, 0, 0 },
-                    new float[] { 20, 30, -40, 10, 0 },
-                    new float[] { -20, -30, 40, -10, 0 },
-                    new float[] { 0, 0, 0, 0, 0 }
+                    new float[] { 0, 0, 0, 0, 0, ConvertGripperStateToMotorAngle(GripperState.Open) }, // Open
+                    new float[] { 20, 30, -40, 10, 0, ConvertGripperStateToMotorAngle(GripperState.Open) },
+                    new float[] { -20, -30, 40, -10, 0, ConvertGripperStateToMotorAngle(GripperState.Close) }, // Close
+                    new float[] { 0, 0, 0, 0, 0, ConvertGripperStateToMotorAngle(GripperState.Open) } // Open
                 };
-            case 2: // 演示 2：更复杂的运动
+            case 2: // 演示 2：更复杂的运动 (5关节 + 夹爪)
+                _demoWaypointTimeInterval = 0.05f; // 假设这个演示的轨迹点是每0.05秒一个
                 return new float[][]
                 {
-                    new float[] { 0, 0, 0, 0, 0 },
-                    new float[] { 10, 20, 30, 40, 50 },
-                    new float[] { 50, 40, 30, 20, 10 },
-                    new float[] { 0, 0, 0, 0, 0 }
+                    new float[] { 0, 0, 0, 0, 0, ConvertGripperStateToMotorAngle(GripperState.Close) }, // Close
+                    new float[] { 10, 20, 30, 40, 50, ConvertGripperStateToMotorAngle(GripperState.Close) },
+                    new float[] { 50, 40, 30, 20, 10, ConvertGripperStateToMotorAngle(GripperState.Open) }, // Open
+                    new float[] { 0, 0, 0, 0, 0, ConvertGripperStateToMotorAngle(GripperState.Close) } // Close
                 };
             default:
                 Debug.LogWarning($"MotionPlanner: 未找到演示序列 ID: {demoID}。", this);
@@ -292,21 +319,21 @@ public class MotionPlanner : MonoBehaviour
     }
 
     /// <summary>
-    /// 更新 MotionPlanner 内部记录的当前关节角度。
-    /// 这个方法**应该由 RobotArmExecutor 或传感器在关节实际移动后调用**，
-    /// 以保持规划器的“世界观”与实际机械臂同步。
+    /// 将 GripperState 转换为夹爪驱动电机角度。
+    /// 假设 Open 对应 90度，Close 对应 0度。
     /// </summary>
-    /// <param name="angles">机械臂当前的所有关节角度。</param>
-    public void UpdateCurrentJointAngles(float[] angles)
+    private float ConvertGripperStateToMotorAngle(GripperState state)
     {
-        if (angles != null && angles.Length == robotDOF)
+        switch (state)
         {
-            _currentJointAngles = (float[])angles.Clone();
-            // Debug.Log($"MotionPlanner: 当前关节角度已更新。J1:{_currentJointAngles[0]:F1}° ..."); // 调试时可以打开
-        }
-        else
-        {
-            Debug.LogWarning($"MotionPlanner: 尝试更新当前关节角度失败，数组为空或长度不匹配 DOF ({robotDOF})。", this);
+            case GripperState.Open:
+                return 90f; // 示例：打开对应的电机角度
+            case GripperState.Close:
+                return 0f; // 示例：关闭对应的电机角度
+            case GripperState.None:
+            default:
+                // 如果是None，表示没有明确的夹爪指令，返回当前夹爪电机角度
+                return _currentActualGripperMotorAngle;
         }
     }
 }

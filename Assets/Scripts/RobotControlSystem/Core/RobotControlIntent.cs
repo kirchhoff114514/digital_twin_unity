@@ -11,7 +11,8 @@ public enum ControlMode
 {
     JointSpaceTeaching, // 关节空间示教（直接控制关节角度）
     TaskControl,        // 任务空间控制（控制末端位置和姿态）
-    Demonstration       // 演示模式（播放预设轨迹）
+    Demonstration,      // 演示模式（播放预设轨迹）
+    GripperControl      // 新增：专门用于夹爪控制的模式
 }
 
 /// <summary>
@@ -22,6 +23,16 @@ public enum PlanningAlgorithm
     JointSpaceFiveOrderPolynomial, // 关节空间五次多项式插值
     CartesianSpaceStraightLine     // 笛卡尔空间直线插值
     // TODO: 可以添加更多算法，如RRT, PRM, 碰撞避免算法等
+}
+
+/// <summary>
+/// 定义末端夹爪的控制状态。
+/// </summary>
+public enum GripperState
+{
+    None,   // 没有夹爪控制意图
+    Open,   // 夹爪打开
+    Close   // 夹爪关闭
 }
 
 /// <summary>
@@ -37,12 +48,15 @@ public struct RobotControlIntent
     public float[] JointAngles { get; private set; } // 在示教模式下，直接的目标关节角度
 
     // --- 任务空间控制模式相关 ---
-    public Vector3 TargetPosition { get; private set; }      // 目标末端位置 (XYZ)
-    public Vector3 TargetEulerAngles { get; private set; }   // 目标末端姿态 (Pitch, Roll, Yaw)
+    public Vector3 TargetPosition { get; private set; }     // 目标末端位置 (XYZ)
+    public Vector3 TargetEulerAngles { get; private set; }  // 目标末端姿态 (Pitch, Roll, Yaw)
     public PlanningAlgorithm SelectedPlanningAlgorithm { get; private set; } // 任务控制时选择的规划算法
 
     // --- 演示模式相关 ---
     public int DemoSequenceID { get; private set; } // 演示序列的ID
+
+    // --- 统一的末端夹爪控制相关 ---
+    public GripperState TargetGripperState { get; private set; } // 夹爪目标状态 (Open/Close/None)
 
     // 私有构造函数，强制通过工厂方法创建
     private RobotControlIntent(ControlMode mode)
@@ -56,6 +70,7 @@ public struct RobotControlIntent
         TargetEulerAngles = Vector3.zero;
         SelectedPlanningAlgorithm = PlanningAlgorithm.JointSpaceFiveOrderPolynomial;
         DemoSequenceID = 0;
+        TargetGripperState = GripperState.None; // 默认无夹爪控制意图
     }
 
     /// <summary>
@@ -95,6 +110,22 @@ public struct RobotControlIntent
     {
         RobotControlIntent intent = new RobotControlIntent(ControlMode.Demonstration);
         intent.DemoSequenceID = demoSequenceID;
+        return intent;
+    }
+
+    /// <summary>
+    /// 工厂方法：创建独立的夹爪控制意图。
+    /// </summary>
+    /// <param name="gripperState">夹爪目标状态 (Open/Close)。</param>
+    /// <returns>夹爪控制意图。</returns>
+    public static RobotControlIntent CreateGripperControlIntent(GripperState gripperState)
+    {
+        if (gripperState == GripperState.None)
+        {
+            Debug.LogWarning("Creating a GripperControlIntent with GripperState.None is usually not intended. Please specify Open or Close.");
+        }
+        RobotControlIntent intent = new RobotControlIntent(ControlMode.GripperControl);
+        intent.TargetGripperState = gripperState;
         return intent;
     }
 }

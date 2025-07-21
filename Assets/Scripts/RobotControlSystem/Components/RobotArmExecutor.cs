@@ -1,15 +1,18 @@
 // File: Assets/Scripts/RobotControlSystem/Components/RobotArmExecutor.cs
-// Description: 负责执行机器人运动指令，驱动虚拟机械臂在Unity中进行显示同步。
+// Description: 根据下位机反馈的实际关节角度和夹爪开闭状态，更新数字孪生机械臂模型。
 //              在Awake时将当前手动设置的关节位置作为新的零位基准。
 
 using UnityEngine;
 using System; // For Debug.Log (string interpolation)
 using System.Linq; // For Debug.Log (string.Join)
 
+// 确保 GripperState 枚举在此文件或可访问的命名空间中定义。
+// 它应该已经从 RobotActualState.cs 或 RobotControlIntent.cs 中导入/定义。
+
 /// <summary>
-/// 机械臂运动的显示执行者。
-/// 接收关节角度轨迹指令，驱动虚拟机械臂平滑运动。
-/// 将启动时的当前关节姿态作为后续运动的零位基准。
+/// RobotArmExecutor 负责接收物理机械臂的实际关节角度和夹爪开闭状态，
+/// 并更新数字孪生模型以进行可视化同步。
+/// 它会将 Awake 时记录的关节姿态作为后续运动的零位基准。
 /// </summary>
 public class RobotArmExecutor : MonoBehaviour
 {
@@ -30,44 +33,62 @@ public class RobotArmExecutor : MonoBehaviour
     public Vector3[] jointRotationAxes;
 
     /// <summary>
-    /// 虚拟机械臂关节的旋转速度（度/秒）。
+    /// 虚拟机械臂关节的平滑速度因子。数值越大，模型跟随实际角度的速度越快。
     /// </summary>
-    [Tooltip("虚拟机械臂关节的旋转速度（度/秒）。")]
-    [Range(10f, 360f)]
-    public float virtualArmRotationSpeed = 100f;
+    [Tooltip("虚拟机械臂关节的平滑速度因子。数值越大，模型跟随实际角度的速度越快。")]
+    [Range(1f, 100f)]
+    public float jointLerpSpeed = 20f;
+
+    // --- 夹爪相关引用和参数 ---
+    /// <summary>
+    /// 虚拟夹爪左侧部分的 Transform。
+    /// </summary>
+    [Tooltip("拖拽虚拟夹爪左侧部分的 Transform。")]
+    public Transform gripperLeftTransform;
+    /// <summary>
+    /// 虚拟夹爪右侧部分的 Transform。
+    /// </summary>
+    [Tooltip("拖拽虚拟夹爪右侧部分的 Transform。")]
+    public Transform gripperRightTransform;
+
+    // 移除了 gripperClosedMotorAngle 和 gripperOpenMotorAngle。
+    // 因为 SerialCommunicator 已将原始电机角度转换为 GripperState 枚举，
+    // RobotArmExecutor 直接根据 GripperState 来设置虚拟模型的视觉角度。
+    // 原始电机角度的定义现在应由 SerialCommunicator 或其他负责硬件通信的模块管理。
 
     /// <summary>
-    /// 判断虚拟关节是否已到达当前轨迹点的角度容差（度）。
+    /// 虚拟夹爪模型在完全闭合时，其局部旋转的欧拉角。
+    /// 例如，如果夹爪闭合时是 0 度，张开时是 -45 度，这里就是 0。
     /// </summary>
-    [Tooltip("判断虚拟关节是否已到达目标角度的容差（度）。")]
-    [Range(0.01f, 1.0f)]
-    public float jointReachThreshold = 0.5f;
+    [Tooltip("虚拟夹爪模型在完全闭合时，其局部旋转的欧拉角。")]
+    public float virtualGripperClosedVisualAngle = 0f;
 
     /// <summary>
-    /// MotionPlanner 实例的引用，用于在关节更新时通知其最新状态。
-    /// 在 RobotControlSystemManager 中设置此引用。
+    /// 虚拟夹爪模型在完全张开时，其局部旋转的欧拉角。
+    /// 例如，如果夹爪闭合时是 0 度，张开时是 -45 度，这里就是 -45。
     /// </summary>
-    [Tooltip("拖拽 MotionPlanner 组件到此处，以便在执行器更新关节时通知规划器。")]
-    public MotionPlanner motionPlanner;
+    [Tooltip("虚拟夹爪模型在完全张开时，其局部旋转的欧拉角。")]
+    public float virtualGripperOpenVisualAngle = -45f; 
+
+    /// <summary>
+    /// 虚拟夹爪的平滑速度因子。数值越大，模型跟随实际角度的速度越快。
+    /// </summary>
+    [Tooltip("虚拟夹爪的平滑速度因子。数值越大，模型跟随实际角度的速度越快。")]
+    [Range(1f, 100f)]
+    public float gripperLerpSpeed = 20f;
 
 
     // --- 内部状态 ---
-    private RobotMotionCommand _currentMotionCommand; // 当前执行的运动指令
-    private int _currentWaypointIndex = 0;           // 当前轨迹点索引
-    private bool _isExecutingTrajectory = false;      // 是否正在执行轨迹
-
-    // 新增：用于存储每个关节在 Awake 时捕捉到的“自定义零位”旋转
+    // 用于存储每个关节在 Awake 时捕捉到的“自定义零位”旋转
     // 这是机械臂模型在 Unity Scene 中手动摆放的初始姿态
     private Quaternion[] _initialZeroRotations;
 
-    // 用于存储每个关节在 Update 中计算出的最终目标旋转四元数
-    // 这个目标旋转是在 _initialZeroRotations 基础上叠加 MotionPlanner 给出角度后的结果
-    private Quaternion[] _targetJointRotations;
-
-    // 用于保存当前关节的实际角度值（相对于机械臂的物理零位，与 MotionPlanner 交互）
-    // 这个数组在每次执行轨迹点后会更新，并传递给 MotionPlanner
-    private float[] _currentJointAngles; 
-
+    // --- 用于通知 MotionPlanner 实际状态更新的事件 ---
+    /// <summary>
+    /// 当数字孪生模型根据下位机反馈更新后，触发此事件。
+    /// 用于通知 MotionPlanner 当前的实际机械臂状态。
+    /// </summary>
+    public event Action<float[]> OnActualStateUpdated;
 
     // --- Unity 生命周期方法 ---
 
@@ -86,17 +107,9 @@ public class RobotArmExecutor : MonoBehaviour
             enabled = false;
             return;
         }
-        if (motionPlanner == null)
-        {
-            Debug.LogError("RobotArmExecutor: MotionPlanner 引用未设置！无法通知其当前关节状态。", this);
-            enabled = false;
-            return;
-        }
 
         // --- 记录当前（手动调整后）的关节姿态作为新的零位基准 ---
         _initialZeroRotations = new Quaternion[robotJointTransforms.Length];
-        _targetJointRotations = new Quaternion[robotJointTransforms.Length];
-        _currentJointAngles = new float[robotJointTransforms.Length]; // 初始化当前关节角度数组
 
         for (int i = 0; i < robotJointTransforms.Length; i++)
         {
@@ -104,10 +117,6 @@ public class RobotArmExecutor : MonoBehaviour
             {
                 // 记录每个关节在 Awake 时的局部旋转，这被视为该关节的“零位”或“初始校准位”
                 _initialZeroRotations[i] = robotJointTransforms[i].localRotation;
-                
-                // 将当前关节的实际角度（相对于初始零位）设置为0，因为这是我们新的相对基准
-                _currentJointAngles[i] = 0f; 
-
                 Debug.Log($"RobotArmExecutor: 关节 {robotJointTransforms[i].name} 的初始零位已记录为: {_initialZeroRotations[i].eulerAngles}");
             }
             else
@@ -115,122 +124,93 @@ public class RobotArmExecutor : MonoBehaviour
                 Debug.LogWarning($"RobotArmExecutor: 关节 {i} 的 Transform 为空，无法记录零位！");
             }
         }
-        
-        // 第一次通知 MotionPlanner 机械臂的初始状态
-        motionPlanner.UpdateCurrentJointAngles(_currentJointAngles);
-        Debug.Log("RobotArmExecutor: 初始化完成，当前关节姿态已记录为新的零位基准。等待 MotionPlanner 指令。");
+
+        Debug.Log("RobotArmExecutor: 初始化完成，当前关节姿态已记录为新的零位基准。等待实际状态反馈。");
     }
 
     void Update()
     {
-        if (_isExecutingTrajectory && _currentMotionCommand.TrajectoryJointAngles != null)
-        {
-            if (_currentWaypointIndex < _currentMotionCommand.TrajectoryJointAngles.Length)
-            {
-                float[] currentWaypointTargetAngles = _currentMotionCommand.TrajectoryJointAngles[_currentWaypointIndex];
-
-                if (currentWaypointTargetAngles.Length != robotJointTransforms.Length)
-                {
-                    Debug.LogError($"RobotArmExecutor: 轨迹点 {_currentWaypointIndex} 的关节数量 ({currentWaypointTargetAngles.Length}) 不匹配机械臂自由度 ({robotJointTransforms.Length})！停止虚拟臂同步。", this);
-                    StopExecution();
-                    return;
-                }
-
-                bool allJointsReachedCurrentWaypoint = true;
-
-                for (int i = 0; i < robotJointTransforms.Length; i++)
-                {
-                    Transform joint = robotJointTransforms[i];
-                    if (joint == null) continue; // 跳过空的关节引用
-
-                    float motionPlannerAngle = currentWaypointTargetAngles[i]; // 这是来自 MotionPlanner 的角度，相对于物理零位
-                    Vector3 rotationAxis = jointRotationAxes[i];             // 当前关节的局部旋转轴
-                    
-                    // --- 核心逻辑：将 MotionPlanner 的角度（相对于物理零位）叠加到 Unity 模型的自定义零位之上 ---
-                    // 1. 创建一个代表 MotionPlanner 输出角度的旋转 (围绕其指定轴)
-                    // Quaternion.AngleAxis(angle, axis) 返回一个围绕指定轴旋转指定角度的四元数
-                    Quaternion angleFromMotionPlanner = Quaternion.AngleAxis(motionPlannerAngle, rotationAxis);
-
-                    // 2. 将此旋转叠加到 Awake 时记录的“初始零位”上
-                    // 注意：这里的乘法顺序很重要。_initialZeroRotations 是基准旋转，angleFromMotionPlanner 是在其基础上应用的“增量”旋转。
-                    _targetJointRotations[i] = _initialZeroRotations[i] * angleFromMotionPlanner;
-
-                    // 平滑旋转关节
-                    joint.localRotation = Quaternion.RotateTowards(
-                        joint.localRotation, // 当前旋转
-                        _targetJointRotations[i], // 目标旋转
-                        virtualArmRotationSpeed * Time.deltaTime // 旋转速度
-                    );
-
-
-                    // 判断是否到达目标角度（这里判断的是最终的 localRotation 是否接近目标）
-                    if (Quaternion.Angle(joint.localRotation, _targetJointRotations[i]) > jointReachThreshold)
-                    {
-                        allJointsReachedCurrentWaypoint = false;
-                    }
-
-                    // 实时更新当前关节角度（相对于物理零位）
-                    // 这一步是为了让 MotionPlanner 能够获取到执行器当前的真实关节角度，用于 IK 初始猜测等
-                    // 但是，直接从 Quaternion.AngleAxis(rotationAxis, joint.localRotation * Quaternion.Inverse(_initialZeroRotations[i])).eulerAngles.magnitude; 
-                    // 来反推角度比较复杂且可能不准确。
-                    // 更简化的方式是：当关节足够接近目标时，我们认为它达到了当前轨迹点的角度。
-                    // 也就是说，当 allJointsReachedCurrentWaypoint 为 true 时，_currentJointAngles 才会被更新为该轨迹点的目标角度。
-                    // 否则，它仍然是上一个已达到的轨迹点角度。
-                    // 如果需要更连续的实时反馈，可以考虑另一种反推方案或增加 Executor 的事件。
-                }
-
-                if (allJointsReachedCurrentWaypoint)
-                {
-                    // 当到达当前轨迹点后，更新内部的 _currentJointAngles 数组，
-                    // 以便在下一次需要时（例如 MotionPlanner 调用 GetCurrentJointAngles()）能提供准确的值。
-                    Array.Copy(currentWaypointTargetAngles, _currentJointAngles, _currentJointAngles.Length);
-                    motionPlanner.UpdateCurrentJointAngles(_currentJointAngles); // 通知 MotionPlanner
-                    Debug.Log($"RobotArmExecutor: 虚拟机械臂已到达轨迹点 {_currentWaypointIndex}。当前关节角度: {string.Join(", ", _currentJointAngles.Select(a => a.ToString("F1")))} (Command ID: {_currentMotionCommand.CommandID})。", this);
-                    _currentWaypointIndex++;
-                }
-            }
-            else // 所有轨迹点执行完毕
-            {
-                Debug.Log($"RobotArmExecutor: 虚拟机械臂轨迹同步完毕 (Command ID: {_currentMotionCommand.CommandID})。", this);
-                StopExecution();
-            }
-        }
+        // 此处不再有主动的轨迹执行逻辑
+        // 模型的更新将由 SerialCommunicator 通过 UpdateDigitalTwin 方法驱动
     }
 
     // --- 公共方法 ---
 
     /// <summary>
-    /// 接收并开始在 Unity 中同步一个新的机器人运动指令。
-    /// 这个方法由 MotionPlanner 发布 OnRobotMotionCommandReady 事件后触发。
+    /// **核心方法：根据下位机反馈的实际关节角度和夹爪开闭状态，更新数字孪生模型。**
+    /// 这个方法应该由 SerialCommunicator 的 OnActualRobotStateReceived 事件调用。
     /// </summary>
-    /// <param name="command">包含要执行的关节角度轨迹序列的 RobotMotionCommand。</param>
-    public void ExecuteMotionCommand(RobotMotionCommand command) // 注意：这里方法名与 MotionPlanner 的委托匹配
+    /// <param name="actualJointAngles">物理机械臂的实际关节角度数组（相对于物理零位）。</param>
+    /// <param name="actualGripperState">物理夹爪的实际开闭状态（枚举值）。</param>
+    public void UpdateDigitalTwin(float[] actualJointAngles, GripperState actualGripperState)
     {
-        if (command.TrajectoryJointAngles == null || command.TrajectoryJointAngles.Length == 0)
+        if (actualJointAngles == null || actualJointAngles.Length != robotJointTransforms.Length)
         {
-            Debug.LogWarning($"RobotArmExecutor: 收到一个空的或无效的运动指令 (ID: {command.CommandID})。忽略并停止虚拟臂同步。", this);
-            StopExecution();
+            Debug.LogError("RobotArmExecutor: 接收到的实际关节角度数组长度不匹配关节 Transforms 数量。", this);
             return;
         }
 
-        StopExecution(); // 停止当前执行中的命令（如果存在），准备开始新命令
-        _currentMotionCommand = command;
-        _currentWaypointIndex = 0;
-        _isExecutingTrajectory = true;
-        Debug.Log($"RobotArmExecutor: 收到新运动指令 (ID: {_currentMotionCommand.CommandID})，包含 {_currentMotionCommand.TrajectoryJointAngles.Length} 个轨迹点。开始同步虚拟机械臂。", this);
-    }
+        // --- 更新机械臂关节 ---
+        for (int i = 0; i < robotJointTransforms.Length; i++)
+        {
+            Transform joint = robotJointTransforms[i];
+            if (joint == null) continue; // 跳过空的关节引用
 
-    // --- 私有辅助方法 ---
+            float actualAngle = actualJointAngles[i]; // 这是来自下位机的实际角度，相对于物理零位
+            Vector3 rotationAxis = jointRotationAxes[i]; // 当前关节的局部旋转轴
 
-    /// <summary>
-    /// 停止当前的虚拟机械臂轨迹执行，重置内部状态。
-    /// </summary>
-    private void StopExecution()
-    {
-        _isExecutingTrajectory = false;
-        _currentWaypointIndex = 0;
-        // 注意：这里 _currentMotionCommand 不设为 null，而是新建一个空实例，
-        // 确保后续检查 _currentMotionCommand.TrajectoryJointAngles 不会引发空引用异常
-        _currentMotionCommand = new RobotMotionCommand(); 
+            // 1. 创建一个代表实际反馈角度的旋转 (围绕其指定轴)
+            Quaternion angleFromActualFeedback = Quaternion.AngleAxis(actualAngle, rotationAxis);
+
+            // 2. 将此旋转叠加到 Awake 时记录的“初始零位”上，得到数字孪生模型的目标局部旋转
+            Quaternion targetLocalRotation = _initialZeroRotations[i] * angleFromActualFeedback;
+
+            // 3. 平滑地将关节旋转到目标
+            joint.localRotation = Quaternion.Lerp(
+                joint.localRotation,
+                targetLocalRotation,
+                Time.deltaTime * jointLerpSpeed
+            );
+        }
+
+        // --- 更新夹爪 ---
+        if (gripperLeftTransform != null && gripperRightTransform != null)
+        {
+            float targetGripperVisualAngle;
+
+            switch (actualGripperState)
+            {
+                case GripperState.Open:
+                    targetGripperVisualAngle = virtualGripperOpenVisualAngle;
+                    break;
+                case GripperState.Close:
+                    targetGripperVisualAngle = virtualGripperClosedVisualAngle;
+                    break;
+                case GripperState.None:
+                default:
+                    // 如果是 None 状态，保持当前夹爪视觉角度（或设置为一个默认的中间状态）
+                    // 这里我们选择保持当前，这通常意味着夹爪在打开和关闭阈值之间，
+                    // 或没有明确的开闭意图，因此模型应保持其当前位置。
+                    targetGripperVisualAngle = (gripperLeftTransform.localEulerAngles.z + (-gripperRightTransform.localEulerAngles.z)) / 2f; 
+                    break;
+            }
+
+            // 假设夹爪的两个部分对称运动 (左爪正向，右爪反向)
+            // 你可能需要根据你的模型实际轴向和运动方向来调整这里
+            Quaternion leftTargetRotation = Quaternion.Euler(gripperLeftTransform.localEulerAngles.x, gripperLeftTransform.localEulerAngles.y, targetGripperVisualAngle);
+            Quaternion rightTargetRotation = Quaternion.Euler(gripperRightTransform.localEulerAngles.x, gripperRightTransform.localEulerAngles.y, -targetGripperVisualAngle); // 反向旋转
+
+            gripperLeftTransform.localRotation = Quaternion.Lerp(gripperLeftTransform.localRotation, leftTargetRotation, Time.deltaTime * gripperLerpSpeed);
+            gripperRightTransform.localRotation = Quaternion.Lerp(gripperRightTransform.localRotation, rightTargetRotation, Time.deltaTime * gripperLerpSpeed);
+        }
+        else if (gripperLeftTransform == null || gripperRightTransform == null)
+        {
+            Debug.LogWarning("RobotArmExecutor: 夹爪 Transform 未完全设置，夹爪模型无法同步。", this);
+        }
+
+        OnActualStateUpdated?.Invoke(actualJointAngles);
+
+        // (可选) 在这里可以添加日志，显示当前数字孪生模型更新后的关节角度
+        // Debug.Log($"RobotArmExecutor: 数字孪生模型已更新。实际关节角度: {string.Join(", ", actualJointAngles.Select(a => a.ToString("F1")))}°, 实际夹爪状态: {actualGripperState}");
     }
 }

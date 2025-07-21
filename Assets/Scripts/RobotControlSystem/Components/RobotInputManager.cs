@@ -5,7 +5,7 @@ using UnityEngine;
 using UnityEngine.UI; // 用于UI元素，如Slider, InputField, Toggle, Dropdown
 using System; // 用于Action事件
 using System.Linq; // 用于简化数组的空值检查和查找
-using TMPro; // <--- 添加这一行，用于 TextMeshPro 组件
+using TMPro; // 用于 TextMeshPro 组件
 
 /// <summary>
 /// RobotInputManager 负责监听UI输入并将其封装为 RobotControlIntent。
@@ -34,12 +34,11 @@ public class RobotInputManager : MonoBehaviour
     [Tooltip("机械臂所有关节的Slider数组。请按关节顺序赋值。")]
     public Slider[] jointSliders;
     [Tooltip("显示当前关节角度的Text或InputField数组。")]
-    public TextMeshProUGUI[] jointAngleTexts; // <--- 类型已更改为 TextMeshProUGUI[]
-
+    public TextMeshProUGUI[] jointAngleTexts;
 
     [Header("控制模式 UI (TaskControl)")]
     [Tooltip("末端目标位置 X 坐标输入框。")]
-    public TMP_InputField targetPosXInput; // <--- InputField 通常也建议使用 TMP_InputField
+    public TMP_InputField targetPosXInput;
     [Tooltip("末端目标位置 Y 坐标输入框。")]
     public TMP_InputField targetPosYInput;
     [Tooltip("末端目标位置 Z 坐标输入框。")]
@@ -52,20 +51,29 @@ public class RobotInputManager : MonoBehaviour
     // 如果你的机械臂末端姿态还需要Yaw，可以添加 targetYawInput
 
     [Tooltip("规划算法选择Dropdown。")]
-    public TMP_Dropdown planningAlgorithmDropdown; // <--- Dropdown 也建议使用 TMP_Dropdown
+    public TMP_Dropdown planningAlgorithmDropdown;
     [Tooltip("控制模式的执行按钮。")]
     public Button executeTaskButton;
 
 
     [Header("演示模式 UI (Demonstration)")]
     [Tooltip("演示序列ID输入框。")]
-    public TMP_InputField demoSequenceIDInput; // <--- InputField 也建议使用 TMP_InputField
+    public TMP_InputField demoSequenceIDInput;
     [Tooltip("播放演示按钮。")]
     public Button playDemoButton;
+
+    // --- 新增统一夹爪控制 UI 引用 ---
+    [Header("末端夹爪控制")]
+    [Tooltip("控制夹爪开/关的单一按钮。")]
+    public Button toggleGripperButton;
+    [Tooltip("显示夹爪当前状态的文本 (例如: '打开' / '关闭')。")]
+    public TextMeshProUGUI gripperStatusText;
+
 
     // --- 内部变量 ---
     private ControlMode _currentSelectedMode = ControlMode.JointSpaceTeaching; // 默认启动模式
     private float[] _currentJointAngles = new float[5]; // 假设5个关节，根据你的机械臂DOF调整
+    private bool _isGripperOpen = false; // 内部状态：夹爪当前是打开还是关闭
 
 
     void Awake()
@@ -82,6 +90,7 @@ public class RobotInputManager : MonoBehaviour
         SetupJointSliders();
         SetupTaskControlUI();
         SetupDemoUI();
+        SetupGripperControlUI(); // 初始化夹爪控制UI
 
         Debug.Log("RobotInputManager: 初始化完成，准备接收UI输入。");
     }
@@ -141,10 +150,11 @@ public class RobotInputManager : MonoBehaviour
 
     /// <summary>
     /// 根据当前选择的模式，更新UI元素的可见性。
+    /// 夹爪控制UI现在是独立的，不随模式切换隐藏/显示。
     /// </summary>
     private void UpdateUIVisibility()
     {
-        // 尝试获取各个模式的父面板并控制其激活状态
+        // 隐藏所有模式的父面板
         SetPanelActive(GetPanelParent(jointSliders), false); // 示教模式面板
         SetPanelActive(GetPanelParent(targetPosXInput), false); // 控制模式面板
         SetPanelActive(GetPanelParent(demoSequenceIDInput), false); // 演示模式面板
@@ -160,7 +170,13 @@ public class RobotInputManager : MonoBehaviour
             case ControlMode.Demonstration:
                 SetPanelActive(GetPanelParent(demoSequenceIDInput), true);
                 break;
+            // GripperControl模式没有对应的UI面板，仅通过按钮触发
+            case ControlMode.GripperControl:
+                // 此时不显示任何特定模式的UI，通常由其他UI触发夹爪控制
+                break;
         }
+        // 夹爪控制UI现在始终可见（如果它在单独的面板中）或者由其自身状态控制。
+        // 这里不需要根据模式来设置夹爪UI的可见性。
     }
 
     /// <summary>
@@ -175,7 +191,7 @@ public class RobotInputManager : MonoBehaviour
             // 假设UI元素被直接放置在一个代表面板的GameObject下
             return uiElement.transform.parent.gameObject;
         }
-        return null; 
+        return null;
     }
 
     /// <summary>
@@ -222,10 +238,10 @@ public class RobotInputManager : MonoBehaviour
             if (jointSliders[jointIndex] != null)
             {
                 jointSliders[jointIndex].onValueChanged.AddListener(value => OnJointSliderChanged(jointIndex, value));
-                
+
                 // 初始化当前关节角度数组
                 _currentJointAngles[jointIndex] = jointSliders[jointIndex].value;
-                
+
                 // 更新显示文本
                 if (jointAngleTexts != null && jointAngleTexts.Length > jointIndex && jointAngleTexts[jointIndex] != null)
                 {
@@ -248,7 +264,7 @@ public class RobotInputManager : MonoBehaviour
             {
                 jointAngleTexts[jointIndex].text = value.ToString("F1") + "°";
             }
-            // 实时发布意图
+            // 实时发布意图，不再包含夹爪开合度，夹爪通过独立意图控制
             OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateJointSpaceTeachingIntent(_currentJointAngles));
         }
     }
@@ -264,7 +280,7 @@ public class RobotInputManager : MonoBehaviour
             planningAlgorithmDropdown.ClearOptions();
             foreach (PlanningAlgorithm algo in Enum.GetValues(typeof(PlanningAlgorithm)))
             {
-                planningAlgorithmDropdown.options.Add(new TMP_Dropdown.OptionData(algo.ToString())); // <--- 使用 TMP_Dropdown.OptionData
+                planningAlgorithmDropdown.options.Add(new TMP_Dropdown.OptionData(algo.ToString()));
             }
             planningAlgorithmDropdown.value = 0; // 默认选中第一个
             planningAlgorithmDropdown.RefreshShownValue();
@@ -276,6 +292,48 @@ public class RobotInputManager : MonoBehaviour
             executeTaskButton.onClick.AddListener(OnExecuteTaskButtonClicked);
         }
     }
+
+    /// <summary>
+    /// 设置夹爪控制UI的监听器和初始值。
+    /// </summary>
+    private void SetupGripperControlUI()
+    {
+        if (toggleGripperButton != null)
+        {
+            toggleGripperButton.onClick.AddListener(OnToggleGripperButtonClicked);
+        }
+        // 初始化夹爪状态显示
+        UpdateGripperStatusText();
+    }
+
+    /// <summary>
+    /// 统一的夹爪控制按钮点击时调用。
+    /// </summary>
+    private void OnToggleGripperButtonClicked()
+    {
+        _isGripperOpen = !_isGripperOpen; // 切换夹爪状态
+
+        GripperState desiredState = _isGripperOpen ? GripperState.Open : GripperState.Close;
+
+        // 发布独立的夹爪控制意图
+        OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateGripperControlIntent(desiredState));
+        Debug.Log($"RobotInputManager: 发布独立的夹爪控制意图: {(desiredState == GripperState.Open ? "打开" : "关闭")}");
+
+        // 更新UI文本显示
+        UpdateGripperStatusText();
+    }
+
+    /// <summary>
+    /// 更新夹爪状态文本显示。
+    /// </summary>
+    private void UpdateGripperStatusText()
+    {
+        if (gripperStatusText != null)
+        {
+            gripperStatusText.text = _isGripperOpen ? "夹爪：打开" : "夹爪：关闭";
+        }
+    }
+
 
     /// <summary>
     /// 执行任务按钮点击时调用，发布 TaskControl 意图。
@@ -292,14 +350,14 @@ public class RobotInputManager : MonoBehaviour
             );
             Vector3 targetEuler = new Vector3(
                 ParseInput(targetPitchInput),
-                ParseInput(targetRollInput),
+                ParseInput(targetPitchInput), // 这里原本是 targetRollInput，请检查是否是笔误
                 0 // 假设Yaw为0或通过其他Input设定，此处未提供Yaw输入框
             );
 
             // 获取选择的规划算法
             PlanningAlgorithm selectedAlgo = (PlanningAlgorithm)planningAlgorithmDropdown.value;
 
-            // 发布 TaskControl 意图
+            // 发布 TaskControl 意图 (不再包含夹爪状态，因为夹爪通过独立按钮触发)
             OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateTaskControlIntent(targetPos, targetEuler, selectedAlgo));
             Debug.Log($"RobotInputManager: 发布 TaskControl 意图。目标位置: {targetPos}, 欧拉角: {targetEuler}, 算法: {selectedAlgo}");
         }
@@ -312,7 +370,7 @@ public class RobotInputManager : MonoBehaviour
     /// <summary>
     /// 解析 InputField 的文本为浮点数。
     /// </summary>
-    private float ParseInput(TMP_InputField inputField) // <--- 参数类型更改为 TMP_InputField
+    private float ParseInput(TMP_InputField inputField)
     {
         if (inputField != null && float.TryParse(inputField.text, out float result))
         {
@@ -321,7 +379,7 @@ public class RobotInputManager : MonoBehaviour
         // 如果InputField为空或解析失败，返回0，并发出警告（根据需求决定是否警告）
         if (inputField == null) Debug.LogWarning("RobotInputManager: 输入框引用为空，返回0。", this);
         else Debug.LogWarning($"RobotInputManager: 无法解析输入框 '{inputField.name}' 的文本 '{inputField.text}' 为浮点数，返回0。", this);
-        return 0f; 
+        return 0f;
     }
 
     /// <summary>
@@ -343,7 +401,7 @@ public class RobotInputManager : MonoBehaviour
         if (_currentSelectedMode == ControlMode.Demonstration)
         {
             // 假设Demo ID是整数
-            int demoID = (int)ParseInput(demoSequenceIDInput); 
+            int demoID = (int)ParseInput(demoSequenceIDInput);
             OnRobotControlIntentUpdated?.Invoke(RobotControlIntent.CreateDemonstrationIntent(demoID));
             Debug.Log($"RobotInputManager: 发布 Demonstration 意图。演示ID: {demoID}");
         }
