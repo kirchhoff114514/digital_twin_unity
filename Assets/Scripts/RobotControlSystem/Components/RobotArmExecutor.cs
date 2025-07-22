@@ -144,7 +144,6 @@ public class RobotArmExecutor : MonoBehaviour
             }
 
             // 假设夹爪的两个部分对称运动 (左爪正向，右爪反向)
-            // 你可能需要根据你的模型实际轴向和运动方向来调整这里
             Quaternion angleFromActualFeedback = Quaternion.AngleAxis(targetGripperVisualAngle, gripperRotationAxis);
             Quaternion minus_angleFromActualFeedback = Quaternion.AngleAxis(-targetGripperVisualAngle, gripperRotationAxis);
 
@@ -154,12 +153,13 @@ public class RobotArmExecutor : MonoBehaviour
             Quaternion right_targetLocalRotation = _initialZeroRotations[robotJointTransforms.Length+1] * minus_angleFromActualFeedback;
 
             // 3. 平滑地将关节旋转到目标
-            gripperLeftTransform.localRotation = Quaternion.RotateTowards(gripperLeftTransform.localRotation,left_targetLocalRotation,Time.deltaTime * jointLerpSpeed);
-            gripperRightTransform.localRotation = Quaternion.RotateTowards(gripperRightTransform.localRotation,right_targetLocalRotation,Time.deltaTime * jointLerpSpeed);
+            gripperLeftTransform.localRotation = Quaternion.RotateTowards(gripperLeftTransform.localRotation,left_targetLocalRotation,Time.deltaTime * gripperLerpSpeed);
+            gripperRightTransform.localRotation = Quaternion.RotateTowards(gripperRightTransform.localRotation,right_targetLocalRotation,Time.deltaTime * gripperLerpSpeed);
         }
         else if (gripperLeftTransform == null || gripperRightTransform == null)
         {
             Debug.LogWarning("RobotArmExecutor: 夹爪 Transform 未完全设置，夹爪模型无法同步。", this);
         }
     }
+    
 }

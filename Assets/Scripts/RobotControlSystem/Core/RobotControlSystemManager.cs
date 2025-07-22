@@ -74,6 +74,7 @@ public class RobotControlSystemManager : MonoBehaviour
             Debug.LogWarning("RobotControlSystemManager: MotionPlanner 返回的期望输出为 null，可能是当前没有有效意图或计算结果。");
         }
         motionPlanner.UpdateCurrentAngle(robotArmExecutor._currentJointAngles, robotArmExecutor._currentGripperState);
+        
     }
 
     /// <summary>
