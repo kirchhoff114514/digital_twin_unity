@@ -132,8 +132,7 @@ public class RobotInputManager : MonoBehaviour
         if (Input.GetKey(KeyCode.H)) moveDelta += Vector3.back;    // Z-axis negative (backward)
         if (Input.GetKey(KeyCode.K)) moveDelta += Vector3.left;    // X-axis negative (left)
         if (Input.GetKey(KeyCode.I)) moveDelta += Vector3.right;   // X-axis positive (right)
-        if (Input.GetKey(KeyCode.J)) moveDelta += Vector3.up;  // Y-axis positive (up)
-        if (Input.GetKey(KeyCode.L)) moveDelta += Vector3.down; // Y-axis negative (down)
+
 
         // --- Roll/Pitch Rotation Control ---
         Vector3 rotateDelta = Vector3.zero; // Unity EulerAngles order: X (Pitch), Y (Yaw), Z (Roll)
@@ -143,6 +142,9 @@ public class RobotInputManager : MonoBehaviour
         // Roll (around Z-axis): Use U/O
         if (Input.GetKey(KeyCode.U)) rotateDelta.y += 1; // Roll clockwise
         if (Input.GetKey(KeyCode.O)) rotateDelta.y -= 1; // Roll counter-clockwise
+
+        if (Input.GetKey(KeyCode.J)) rotateDelta.z += 1;  // Y-axis positive (up)
+        if (Input.GetKey(KeyCode.L)) rotateDelta.z -= 1; // Y-axis negative (down)
 
         bool inputDetected = false;
 
@@ -159,13 +161,12 @@ public class RobotInputManager : MonoBehaviour
             Vector3 newEulerAngles = _currentEndEffectorEulerAngles;
             newEulerAngles.x += rotateDelta.x * keyboardRotateSpeed * Time.deltaTime; // Pitch
             newEulerAngles.y += rotateDelta.y * keyboardRotateSpeed * Time.deltaTime; // Roll
-
-            // For a 5-DOF robotic arm, Yaw (Y-axis) typically remains fixed at 0.
-            newEulerAngles.z = 0f;
+            newEulerAngles.z += rotateDelta.z * keyboardRotateSpeed * Time.deltaTime; // Roll
 
             // Ensure angles are within a reasonable range (e.g., -180 to 180 or 0 to 360)
             newEulerAngles.x = Mathf.Repeat(newEulerAngles.x + 180, 360) - 180; // Clamp Pitch to -180 to 180
             newEulerAngles.y = Mathf.Repeat(newEulerAngles.y + 180, 360) - 180; // Clamp Roll to -180 to 180
+            newEulerAngles.z = Mathf.Repeat(newEulerAngles.z + 180, 360) - 180; // Clamp Roll to -180 to 180
 
             _currentEndEffectorEulerAngles = newEulerAngles;
             inputDetected = true;

@@ -50,6 +50,7 @@ public class KinematicsCalculator : MonoBehaviour
 
     // 存储 DH 参数的数组
     private DH_Link[] dhParameters;
+    public 
 
     void Awake()
     {
@@ -184,26 +185,116 @@ public class KinematicsCalculator : MonoBehaviour
         return bestSolution;
     }
 
-     /// <summary>
-    /// 逆运动学解算函数重载。姿态输入为四元数。
-    /// 此函数将四元数转换为欧拉角，然后调用接受欧拉角的 SolveIK 函数。
-    /// </summary>
-    /// <param name="targetPosition">目标末端执行器位置。</param>
-    /// <param name="targetRotation">目标末端执行器旋转 (Quaternion)。</param>
-    /// <param name="currentJointAngles">当前关节角度，作为IK解算的初始猜测值。</param>
-    /// <returns>解算出的关节角度数组，如果无解则返回 null。</returns>
-    public float[] SolveIK(Vector3 targetPosition, Quaternion targetRotation, float[] currentJointAngles)
+     public float[] SolveIK2(Vector3 targetPosition, Vector3 targetEulerAngles, float[] currentJointAngles)
     {
-        // 将四元数转换为欧拉角
-        // 注意：Quaternion.eulerAngles 返回的是围绕 Z、X、Y 轴的旋转，顺序可能与你机器人的欧拉角定义不同
-        // 请确保这里的转换与你的机器人姿态表示方式一致
-        Vector3 targetEulerAngles = targetRotation.eulerAngles;
+        Debug.Log($"KinematicsCalculator (IK2): Attempting to solve P:{targetPosition}, E:{targetEulerAngles}");
 
-        Debug.Log($"KinematicsCalculator (IK-Quaternion Overload): 尝试解算 P:{targetPosition}, Q:{targetRotation.eulerAngles} (Euler)");
+        if (currentJointAngles == null || currentJointAngles.Length != robotDOF)
+        {
+            currentJointAngles = new float[robotDOF];
+            Debug.LogWarning("KinematicsCalculator: IK2 initial guess joint array is null or length mismatch, initialized to zero.", this);
+        }
 
-        // 调用现有的 SolveIK 函数
-        return SolveIK(targetPosition, targetEulerAngles, currentJointAngles);
+        List<float[]> possibleSolutions = new List<float[]>();
+
+        // Extracting target position components
+        float x_ee = targetPosition.x;
+        float y_ee = targetPosition.y;
+        float z_ee = targetPosition.z;
+
+        // Extracting Euler angles for clarity based on your equations
+        float phi_yaw = targetEulerAngles.z;   // Corresponds to theta1 in your equations
+        float phi_pitch = targetEulerAngles.x; // Used for a' and h'
+        float phi_roll = targetEulerAngles.y;  // Corresponds to theta5 in your equations
+
+        
+        float a_prime = x_ee - l3 * Mathf.Cos(phi_pitch * Mathf.Deg2Rad)-41.5f;
+        float h_prime = z_ee - l3 * Mathf.Sin(phi_pitch * Mathf.Deg2Rad);
+
+
+        float theta1 =phi_yaw; 
+
+        float r_ah_squared = a_prime * a_prime + h_prime * h_prime;
+        float cosTheta3Numerator = r_ah_squared - l1 * l1 - l2 * l2;
+        float cosTheta3Denominator = 2 * l1 * l2;
+
+        if (Mathf.Abs(cosTheta3Denominator) < 1e-6)
+        {
+            Debug.LogError("KinematicsCalculator (IK2): Link lengths are too small or zero, cannot solve for Theta3.", this);
+            return null;
+        }
+
+        float cosTheta3 = cosTheta3Numerator / cosTheta3Denominator;
+
+        if (cosTheta3 > 1.0f + ikSolveTolerance || cosTheta3 < -1.0f - ikSolveTolerance)
+        {
+            Debug.LogWarning($"KinematicsCalculator (IK2): Target position unreachable or out of workspace. cos(theta3) = {cosTheta3:F3}.");
+            return null;
+        }
+
+        cosTheta3 = Mathf.Clamp(cosTheta3, -1.0f, 1.0f);
+
+        // Two possible solutions for Theta3 (elbow up/elbow down)
+        float theta3_solution1 = Mathf.Acos(cosTheta3) * Mathf.Rad2Deg;
+        float theta3_solution2 = -theta3_solution1;
+
+        foreach (float currentTheta3 in new float[] { theta3_solution1, theta3_solution2 })
+        {
+            // Convert currentTheta3 to radians for trigonometric functions
+            float currentTheta3Rad = currentTheta3 * Mathf.Deg2Rad;
+
+            // --- Calculate k1 and k2 ---
+            float k1 = l1 + l2 * Mathf.Cos(currentTheta3Rad);
+            float k2 = l2 * Mathf.Sin(currentTheta3Rad);
+
+            if (Mathf.Abs(k1) < 1e-6 && Mathf.Abs(k2) < 1e-6)
+            {
+                Debug.LogWarning($"KinematicsCalculator (IK2): k1 and k2 are both near zero, potentially leading to inaccurate Theta2 solution (for theta3={currentTheta3:F1} degrees).");
+            }
+            
+
+            float theta2 = (Mathf.Atan2(h_prime, a_prime) - Mathf.Atan2(k2, k1)) * Mathf.Rad2Deg;
+
+            // --- Calculate Theta4 ---
+            float theta4 = phi_pitch - theta2 - currentTheta3;
+
+            // --- Calculate Theta5 ---
+            float theta5 = phi_roll; // Directly from your equations
+
+            float[] solution = new float[robotDOF];
+            solution[0] = theta1;
+            solution[1] = theta2 - 45; // Applying the offset from your original code
+            solution[2] = currentTheta3 + 45; // Applying the offset from your original code
+            solution[3] = theta4;
+            solution[4] = theta5;
+
+            possibleSolutions.Add(solution);
+        }
+
+        if (possibleSolutions.Count == 0)
+        {
+            Debug.LogWarning("KinematicsCalculator (IK2): No feasible IK solution found.");
+            return null;
+        }
+
+        float[] bestSolution = null;
+        float minCost = float.MaxValue;
+
+        foreach (var solution in possibleSolutions)
+        {
+            float cost = CalculateWeightedCost(currentJointAngles, solution);
+            if (cost < minCost)
+            {
+                minCost = cost;
+                bestSolution = solution;
+            }
+        }
+        Debug.Log($"KinematicsCalculator (IK2): Solved result (selected): {string.Join(", ", bestSolution.Select(a => a.ToString("F1")))}");
+
+        return bestSolution;
     }
+
+
 
     /// <summary>
     /// 计算从当前关节角度到目标关节角度的加权成本。

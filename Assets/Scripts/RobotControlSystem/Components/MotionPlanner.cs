@@ -134,7 +134,7 @@ public class MotionPlanner : MonoBehaviour
             case ControlMode.PlayMode:
                 _targetGripperState = intent.TargetGripperState;
                 float[] temp;
-                temp =kinematicsCalculator.SolveIK(
+                temp =kinematicsCalculator.SolveIK2(
                     intent.TargetPosition,
                     intent.TargetEulerAngles,
                     _currentJointAngles // 以当前实际角度作为IK求解起点
