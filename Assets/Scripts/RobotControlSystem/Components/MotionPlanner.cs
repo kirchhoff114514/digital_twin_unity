@@ -38,6 +38,8 @@ public class MotionPlanner : MonoBehaviour
     [Tooltip("在任务控制模式下，机器人平滑过渡到目标位置的期望时间 (秒)。")]
     public float _taskControlMovementSmoothingDuration = 1.0f; // 默认1秒平滑过渡
     private float[] _iksolveResult; // 用于存储IK解算结果
+    private float[] _iksolveResult_playmode; // 用于存储IK解算结果
+    
 
 
     // 用于GripperControl模式
@@ -51,6 +53,10 @@ public class MotionPlanner : MonoBehaviour
     private GripperState _currentGripperState; // 当前夹爪状态
     private GripperState _targetGripperState; // 夹爪状态
     private GripperState _intentGripperState; // 意图夹爪状态
+
+    private Queue<RobotControlIntent> _taskQueue = new Queue<RobotControlIntent>();
+
+    private RobotControlIntent _playmodeIntent; // 用于 PlayMode 的意图
 
 
 
@@ -114,6 +120,7 @@ public class MotionPlanner : MonoBehaviour
                 _taskControlTargetPosition = intent.TargetPosition;
                 _taskControlTargetEulerAngles = intent.TargetEulerAngles;
                 _targetGripperState = intent.TargetGripperState;
+                Debug.Log($"MotionPlanner: TaskControl模式意图已更新111。目标位置: {_taskControlTargetPosition}, 目标姿态: {_taskControlTargetEulerAngles}, 夹爪状态: {intent.TargetGripperState}");
                 _iksolveResult = kinematicsCalculator.SolveIK(
                     _taskControlTargetPosition,
                     _taskControlTargetEulerAngles,
@@ -125,7 +132,14 @@ public class MotionPlanner : MonoBehaviour
                 break;
 
             case ControlMode.PlayMode:
-               
+                _targetGripperState = intent.TargetGripperState;
+                _iksolveResult_playmode = kinematicsCalculator.SolveIK(
+                    intent.TargetPosition,
+                    intent.TargetEulerAngles,
+                    _currentJointAngles // 以当前实际角度作为IK求解起点
+                );
+                Debug.Log($"MotionPlanner: plymode模式意图已更新111。目标位置: {intent.TargetPosition}, 目标姿态: {intent.TargetEulerAngles}, 夹爪状态: {intent.TargetGripperState}");
+
                 break;
 
             case ControlMode.GripperControl:
@@ -201,6 +215,9 @@ public class MotionPlanner : MonoBehaviour
                 break;
 
             case ControlMode.PlayMode:
+                    _desiredJointAngles =_iksolveResult_playmode.Clone() as float[]; // 使用 PlayMode 的 IK 解算结果
+                    _targetGripperState = _currentGripperState; 
+                    break;
                
             case ControlMode.GripperControl:
                 // GripperControl模式：仅控制夹爪，关节保持当前状态

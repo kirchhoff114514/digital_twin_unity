@@ -4,12 +4,21 @@
 //              并由 SerialCommunicator 负责发送指令的新逻辑，并适配 GripperState 枚举。
 
 using UnityEngine;
-using System; // For Tuple
+using System;
+using UnityEditor.Experimental.GraphView; // For Tuple
 
 /// <summary>
 /// RobotControlSystemManager 是整个机器人控制系统的主要入口点。
 /// 它负责链接 InputManager, MotionPlanner, SerialCommunicator 和 RobotArmExecutor。
 /// </summary>
+/// 
+
+
+public enum MotorType
+{//动力类型，默认为舵机
+    Servo=0,Stepper=1
+}
+
 public class RobotControlSystemManager : MonoBehaviour
 {
     [Header("核心系统组件引用")]
@@ -23,6 +32,9 @@ public class RobotControlSystemManager : MonoBehaviour
     public RobotArmExecutor robotArmExecutor;
 
 
+    private int time_flag = -1; 
+
+    Tuple<float[], GripperState> last_desiredOutput = null; // 用于存储上一次的期望输出;
     void Awake()
     {
         Debug.Log("RobotControlSystemManager: 开始初始化系统...");
@@ -40,7 +52,13 @@ public class RobotControlSystemManager : MonoBehaviour
         robotInputManager.OnRobotControlIntentUpdated += motionPlanner.ProcessRobotControlIntent;
         Debug.Log("RobotControlSystemManager: RobotInputManager.OnRobotControlIntentUpdated 已订阅到 MotionPlanner.ProcessRobotControlIntent。");
 
-        
+        string[] ports=SerialManager.Instance.ScanPort();
+        if (ports != null){
+            foreach (string port in ports){
+                SerialManager.Instance.ConnectSerialPort(port, 115200); // 连接串口
+                Debug.Log("RobotControlSystemManager: 已连接串口：" + port);
+            }
+        }
 
         Debug.Log("RobotControlSystemManager: 系统初始化完成，事件链已建立。");
     }
@@ -58,22 +76,67 @@ public class RobotControlSystemManager : MonoBehaviour
         Debug.Log("RobotControlSystemManager: 系统清理完成。");
     }
 
-
+    public MotorType motorType = MotorType.Servo; // motorType 设为 0（Servo）
+         
     void Update()
     {
         
         Tuple<float[], GripperState> desiredOutput = motionPlanner.CalculateDesiredOutput(Time.deltaTime);
-        if (desiredOutput!= null)
+        float[] jointAngles = desiredOutput?.Item1;
+
+        if (desiredOutput != null && jointAngles != null && desiredOutput != last_desiredOutput )
         {
             // 将期望的关节角度和夹爪状态发送给 RobotArmExecutor
             robotArmExecutor.SetJointAngles(desiredOutput.Item1, desiredOutput.Item2);
             Debug.Log($"RobotControlSystemManager: 发送期望关节角度和夹爪状态到 RobotArmExecutor。");
+
+            
+            // 遍历关节角度数组，依次发送每个关节的角度
+            for (int i = 0; i < 4; i++)
+            {
+                int motorID = i + 1; 
+                int angle = (int)jointAngles[i];
+
+                // 发送串口数据
+                SerialManager.Instance.SendData((int)motorType, motorID, angle);
+                Debug.Log($"RobotControlSystemManager: 已通过串口发送 ID {motorID} 的关节角度: {angle}");
+            }       
+            SerialManager.Instance.SendData(1, 0, (int)jointAngles[4]);
+            
+            SerialManager.Instance.SendData(0, 5, (int)desiredOutput.Item2); //发送夹爪状态
+            // time_flag++;
+            // switch (time_flag) {
+            //     case 0:
+            //         SerialManager.Instance.SendData(0, 1, (int)jointAngles[0]); //发送夹爪状态
+            //         break;
+            //     case 2:
+            //         SerialManager.Instance.SendData(0, 2, (int)jointAngles[1]); //发送夹爪状态
+            //         break;
+            //     case 4:
+            //         SerialManager.Instance.SendData(0, 3, (int)jointAngles[2]); //发送夹爪状态
+            //         break;
+            //     case 6:
+            //         SerialManager.Instance.SendData(0, 4, (int)jointAngles[3]); //发送夹爪状态
+            //         break;
+            //     case 8:
+            //         SerialManager.Instance.SendData(1, 0, (int)jointAngles[4]); //发送夹爪状态
+            //         break;
+            //     case 10:
+            //         SerialManager.Instance.SendData(0, 5, (int)desiredOutput.Item2); //发送夹爪状态
+            //         time_flag = -1;
+            //         break;
+            //     default:
+            //         break;
+            // }
+            last_desiredOutput = desiredOutput;
         }
         else
         {
-            Debug.LogWarning("RobotControlSystemManager: MotionPlanner 返回的期望输出为 null，可能是当前没有有效意图或计算结果。");
+            Debug.LogWarning("RobotControlSystemManager: MotionPlanner 返回的期望输出为 null 或关节角度数组长度不足 6，无法发送数据。");
         }
+
         motionPlanner.UpdateCurrentAngle(robotArmExecutor._currentJointAngles, robotArmExecutor._currentGripperState);
+    
     }
 
     /// <summary>

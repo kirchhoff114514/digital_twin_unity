@@ -153,8 +153,8 @@ public class KinematicsCalculator : MonoBehaviour
 
             float[] solution = new float[robotDOF];
             solution[0] = theta1;
-            solution[1] = theta2;
-            solution[2] = currentTheta3;
+            solution[1] = theta2-45;
+            solution[2] = currentTheta3+45;
             solution[3] = theta4;
             solution[4] = theta5;
 
@@ -179,9 +179,6 @@ public class KinematicsCalculator : MonoBehaviour
                 bestSolution = solution;
             }
         }
-
-        bestSolution[1]-=45;
-        bestSolution[2]+=45;
         Debug.Log($"KinematicsCalculator (IK): 解算结果 (已选择): {string.Join(", ", bestSolution.Select(a => a.ToString("F1")))}");
 
         return bestSolution;
@@ -215,6 +212,7 @@ public class KinematicsCalculator : MonoBehaviour
     private float CalculateWeightedCost(float[] currentAngles, float[] targetAngles)
     {
         float totalCost = 0f;
+        float[] weight = new float[] {1f, 10f, 2f, 1f, 0.5f}; // 基座关节的权重更大，后续关节权重递减
         for (int i = 0; i < robotDOF; i++)
         {
             if (i >= currentAngles.Length || i >= targetAngles.Length)
@@ -223,11 +221,8 @@ public class KinematicsCalculator : MonoBehaviour
                 continue;
             }
 
-            float angleDiff = Mathf.Abs(NormalizeAngle(targetAngles[i] - currentAngles[i]));
-            float weight = baseJointWeightMultiplier * (1f - (float)i * jointWeightDecrementFactor / Mathf.Max(1, robotDOF - 1));
-            weight = Mathf.Max(0.1f, weight); 
-
-            totalCost += angleDiff * weight;
+            float angleDiff = Mathf.Abs(targetAngles[i] - currentAngles[i]);
+            totalCost += angleDiff * weight[i];
         }
         return totalCost;
     }
@@ -305,34 +300,6 @@ public class KinematicsCalculator : MonoBehaviour
         return totalTransform;
     }
 
-    // --- Jacobian Matrix ---
-    // (此处代码与之前的版本相同，保持不变)
-    public float[,] CalculateJacobian(float[] jointAngles)
-    {
-        if (jointAngles == null || jointAngles.Length != robotDOF)
-        {
-            Debug.LogError("KinematicsCalculator (雅可比矩阵 占位符): 关节角度数组为空或长度与 DOF 不匹配。", this);
-            return null;
-        }
-
-        Debug.Log($"KinematicsCalculator (雅可比矩阵 占位符): 计算雅可比矩阵，关节角度: {string.Join(", ", jointAngles.Select(a => a.ToString("F1")))}");
-
-        float[,] jacobian = new float[6, robotDOF]; 
-
-        for (int r = 0; r < 6; r++)
-            for (int c = 0; c < robotDOF; c++)
-                jacobian[r, c] = (float)Math.Sin(jointAngles[c] * Mathf.Deg2Rad * 0.1f + r) * 0.1f + UnityEngine.Random.Range(-0.01f, 0.01f); 
-        
-        Debug.Log("KinematicsCalculator (雅可比矩阵 占位符): 雅可比矩阵计算完毕 (模拟)。");
-        return jacobian;
-    }
-
-    /// <summary>
-    /// 规范化角度到 -180 到 180 度之间。
-    /// 用于处理角度差值时，确保选择最短的旋转路径。
-    /// </summary>
-    /// <param name="angle">待规范化的角度。</param>
-    /// <returns>规范化后的角度。</returns>
     private float NormalizeAngle(float angle)
     {
         angle = angle % 360; 
