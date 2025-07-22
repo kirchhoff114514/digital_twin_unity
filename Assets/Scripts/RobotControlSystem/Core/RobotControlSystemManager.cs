@@ -5,7 +5,6 @@
 
 using UnityEngine;
 using System;
-using UnityEditor.Experimental.GraphView; // For Tuple
 
 /// <summary>
 /// RobotControlSystemManager 是整个机器人控制系统的主要入口点。
@@ -102,7 +101,7 @@ public class RobotControlSystemManager : MonoBehaviour
                 Debug.Log($"RobotControlSystemManager: 已通过串口发送 ID {motorID} 的关节角度: {angle}");
             }       
             SerialManager.Instance.SendData(1, 0, (int)jointAngles[4]);
-            
+            Debug.Log($"RobotControlSystemManager: 已通过串口发送 ID {0} 的关节角度: {(int)jointAngles[4]}");
             SerialManager.Instance.SendData(0, 5, (int)desiredOutput.Item2); //发送夹爪状态
             // time_flag++;
             // switch (time_flag) {

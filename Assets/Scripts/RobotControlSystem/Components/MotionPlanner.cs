@@ -36,7 +36,7 @@ public class MotionPlanner : MonoBehaviour
     private Vector3 _taskControlTargetEulerAngles;  // 任务空间目标欧拉角
     private float _taskControlSegmentStartTime; // 记录当前任务控制指令开始的时间 (Time.time)
     [Tooltip("在任务控制模式下，机器人平滑过渡到目标位置的期望时间 (秒)。")]
-    public float _taskControlMovementSmoothingDuration = 1.0f; // 默认1秒平滑过渡
+    public float _taskControlMovementSmoothingDuration = 2.0f; // 
     private float[] _iksolveResult; // 用于存储IK解算结果
     private float[] _iksolveResult_playmode; // 用于存储IK解算结果
 
@@ -54,13 +54,9 @@ public class MotionPlanner : MonoBehaviour
     private GripperState _targetGripperState = GripperState.Close; // 夹爪状态
     private GripperState _intentGripperState = GripperState.Close; // 意图夹爪状态
 
-    private Queue<RobotControlIntent> _taskQueue = new Queue<RobotControlIntent>();
 
-    private RobotControlIntent _playmodeIntent; // 用于 PlayMode 的意图
 
-    private Queue<RobotControlIntent> _taskQueue = new Queue<RobotControlIntent>();
 
-    private RobotControlIntent _playmodeIntent; // 用于 PlayMode 的意图
 
 
 
