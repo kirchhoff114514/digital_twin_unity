@@ -83,6 +83,34 @@ public class RobotInputManager : MonoBehaviour
     [Tooltip("初始位置时的末端姿态（Euler Angles）。")]
     public Vector3 homeEulerAngles = new Vector3(0f, 0f, 0f); // 示例初始姿态，请在Unity中调整
 
+    public static T Bound<T>(T x, T b1, T b2) where T : IComparable<T>
+        {
+            // 确定真正的下边界和上边界，即使 b1 和 b2 的顺序颠倒
+            T lowerBound = b1;
+            T upperBound = b2;
+
+            if (b1.CompareTo(b2) > 0) // 如果 b1 > b2，则交换
+            {
+                lowerBound = b2;
+                upperBound = b1;
+            }
+
+            // 限制 x 在 [lowerBound, upperBound] 范围内
+            // 使用 CompareTo 方法进行比较
+            if (x.CompareTo(lowerBound) < 0) // 如果 x < lowerBound
+            {
+                return lowerBound;
+            }
+            else if (x.CompareTo(upperBound) > 0) // 如果 x > upperBound
+            {
+                return upperBound;
+            }
+            else // 如果 x 在范围内
+            {
+                return x;
+            }
+        }
+
 
     void Awake()
     {
@@ -152,6 +180,8 @@ public class RobotInputManager : MonoBehaviour
         if (moveDelta != Vector3.zero)
         {
             _currentEndEffectorPosition += moveDelta.normalized * keyboardTranslateSpeed * Time.deltaTime;
+            // Ensure the position is within a reasonable range (e.g., -1 to 1)
+            _currentEndEffectorPosition.x = Mathf.Clamp(_currentEndEffectorPosition.x, 220f, 380f);
             inputDetected = true;
         }
 
@@ -164,9 +194,9 @@ public class RobotInputManager : MonoBehaviour
             newEulerAngles.z += rotateDelta.z * keyboardRotateSpeed * Time.deltaTime; // Roll
 
             // Ensure angles are within a reasonable range (e.g., -180 to 180 or 0 to 360)
-            newEulerAngles.x = Mathf.Repeat(newEulerAngles.x + 180, 360) - 180; // Clamp Pitch to -180 to 180
-            newEulerAngles.y = Mathf.Repeat(newEulerAngles.y + 180, 360) - 180; // Clamp Roll to -180 to 180
-            newEulerAngles.z = Mathf.Repeat(newEulerAngles.z + 180, 360) - 180; // Clamp Roll to -180 to 180
+            newEulerAngles.x = Mathf.Clamp(newEulerAngles.x, -179, 179); // Clamp Pitch to -180 to 180
+            newEulerAngles.y = Mathf.Clamp(newEulerAngles.y, -179, 179); // Clamp Roll to -180 to 180
+            newEulerAngles.z = Mathf.Clamp(newEulerAngles.z, -90, 90); // Clamp Yaw to -180 to 180
 
             _currentEndEffectorEulerAngles = newEulerAngles;
             inputDetected = true;

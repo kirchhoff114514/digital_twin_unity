@@ -65,7 +65,7 @@ public class RobotControlSystemManager : MonoBehaviour
         Tuple<float[], GripperState> desiredOutput = motionPlanner.CalculateDesiredOutput(Time.deltaTime);
         if (desiredOutput!= null)
         {
-            // 将期望的关节角度和夹爪状态发送给 RobotArmExecutor
+
             robotArmExecutor.SetJointAngles(desiredOutput.Item1, desiredOutput.Item2);
             Debug.Log($"RobotControlSystemManager: 发送期望关节角度和夹爪状态到 RobotArmExecutor。");
         }
