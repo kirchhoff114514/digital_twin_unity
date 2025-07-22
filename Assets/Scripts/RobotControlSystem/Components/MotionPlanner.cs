@@ -176,6 +176,7 @@ public class MotionPlanner : MonoBehaviour
             case ControlMode.JointSpaceTeaching:
                 // JointTeach模式：直接将目标值作为期望输出
                 _desiredJointAngles = (float[])_jointTeachTargetAngles.Clone();
+                 _targetGripperState = _currentGripperState;
                 break;
 
             case ControlMode.TaskControl:
