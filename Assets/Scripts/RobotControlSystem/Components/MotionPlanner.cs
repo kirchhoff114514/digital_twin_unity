@@ -39,7 +39,7 @@ public class MotionPlanner : MonoBehaviour
     public float _taskControlMovementSmoothingDuration = 1.0f; // 默认1秒平滑过渡
     private float[] _iksolveResult; // 用于存储IK解算结果
     private float[] _iksolveResult_playmode; // 用于存储IK解算结果
-    
+
 
 
     // 用于GripperControl模式
@@ -50,9 +50,13 @@ public class MotionPlanner : MonoBehaviour
 
     // MotionPlanner需要这些信息作为IK的起点或轨迹规划的起始点。
     private float[] _currentJointAngles;
-    private GripperState _currentGripperState=GripperState.Close; // 当前夹爪状态
-    private GripperState _targetGripperState=GripperState.Close; // 夹爪状态
-    private GripperState _intentGripperState=GripperState.Close; // 意图夹爪状态
+    private GripperState _currentGripperState = GripperState.Close; // 当前夹爪状态
+    private GripperState _targetGripperState = GripperState.Close; // 夹爪状态
+    private GripperState _intentGripperState = GripperState.Close; // 意图夹爪状态
+
+    private Queue<RobotControlIntent> _taskQueue = new Queue<RobotControlIntent>();
+
+    private RobotControlIntent _playmodeIntent; // 用于 PlayMode 的意图
 
     private Queue<RobotControlIntent> _taskQueue = new Queue<RobotControlIntent>();
 
@@ -83,7 +87,7 @@ public class MotionPlanner : MonoBehaviour
     }
 
 
-    public void UpdateCurrentAngle(float[] currentJointAngles,GripperState currentGripperState)
+    public void UpdateCurrentAngle(float[] currentJointAngles, GripperState currentGripperState)
     {
         if (currentJointAngles != null && currentJointAngles.Length == robotDOF)
         {
@@ -134,17 +138,20 @@ public class MotionPlanner : MonoBehaviour
             case ControlMode.PlayMode:
                 _targetGripperState = intent.TargetGripperState;
                 float[] temp;
-                temp =kinematicsCalculator.SolveIK2(
+                temp = kinematicsCalculator.SolveIK2(
                     intent.TargetPosition,
                     intent.TargetEulerAngles,
                     _currentJointAngles // 以当前实际角度作为IK求解起点
                 );
-                if (temp == null || temp.Length!= robotDOF){
-                    _iksolveResult_playmode= _currentJointAngles;
-                }else{
+                if (temp == null || temp.Length != robotDOF)
+                {
+                    _iksolveResult_playmode = _currentJointAngles;
+                }
+                else
+                {
                     _iksolveResult_playmode = temp;
                 }
-                
+
                 Debug.Log($"MotionPlanner: plymode模式意图已更新111。目标位置: {intent.TargetPosition}, 目标姿态: {intent.TargetEulerAngles}, 夹爪状态: {intent.TargetGripperState}");
 
                 break;
@@ -176,7 +183,7 @@ public class MotionPlanner : MonoBehaviour
             case ControlMode.JointSpaceTeaching:
                 // JointTeach模式：直接将目标值作为期望输出
                 _desiredJointAngles = (float[])_jointTeachTargetAngles.Clone();
-                 _targetGripperState = _currentGripperState;
+                _targetGripperState = _currentGripperState;
                 break;
 
             case ControlMode.TaskControl:
@@ -223,14 +230,14 @@ public class MotionPlanner : MonoBehaviour
                 break;
 
             case ControlMode.PlayMode:
-                    _desiredJointAngles =_iksolveResult_playmode.Clone() as float[]; // 使用 PlayMode 的 IK 解算结果
-                    _targetGripperState = _currentGripperState; 
-                    break;
-               
+                _desiredJointAngles = _iksolveResult_playmode.Clone() as float[]; // 使用 PlayMode 的 IK 解算结果
+                _targetGripperState = _currentGripperState;
+                break;
+
             case ControlMode.GripperControl:
                 // GripperControl模式：仅控制夹爪，关节保持当前状态
                 _desiredJointAngles = (float[])currentStartAngles.Clone();
-                _targetGripperState =_intentGripperState;
+                _targetGripperState = _intentGripperState;
                 break;
 
             default:
@@ -240,11 +247,11 @@ public class MotionPlanner : MonoBehaviour
                 break;
         }
 
-        return Tuple.Create(_desiredJointAngles,_targetGripperState );
+        return Tuple.Create(_desiredJointAngles, _targetGripperState);
     }
 
 
 
 
-   
+
 }
